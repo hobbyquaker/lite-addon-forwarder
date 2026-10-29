@@ -1,0 +1,10 @@
+/dist/
+/ui/node_modules/
+/ui/dist/
+# the build fills app/ and bin/; the manifest's icons are tracked in www/, where the catalogue
+# reads them beside the manifest at the release tag
+/addon/forwarder/app/
+/addon/forwarder/bin/
+/addon/forwarder/versions
+/addon/forwarder/etc/
+/addon/forwarder/var/
