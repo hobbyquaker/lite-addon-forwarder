@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -24,6 +25,7 @@ import (
 	"github.com/hobbyquaker/ccu-addon-kit/go/litesource/fakelite"
 	"github.com/hobbyquaker/lite-addon-forwarder/internal/config"
 	"github.com/hobbyquaker/lite-addon-forwarder/internal/httpapi"
+	"github.com/hobbyquaker/lite-addon-forwarder/internal/metrics"
 	"github.com/hobbyquaker/lite-addon-forwarder/internal/pipeline"
 	"github.com/hobbyquaker/lite-addon-forwarder/internal/source"
 )
@@ -78,6 +80,58 @@ type hook struct {
 	bodies []json.RawMessage
 }
 
+// fakeES answers _bulk (every item taken) and _index_template at /dev/es.
+func fakeES(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case r.URL.Path == "/dev/es/_bulk":
+		b, _ := io.ReadAll(r.Body)
+		var items []map[string]any
+		for i, line := range bytesLines(b) {
+			if i%2 == 0 && len(line) > 0 {
+				items = append(items, map[string]any{"index": map[string]any{"status": 201, "_index": "x"}})
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"took": 1, "errors": false, "items": items})
+	case len(r.URL.Path) > len("/dev/es/_index_template/") && r.URL.Path[:len("/dev/es/_index_template/")] == "/dev/es/_index_template/":
+		_, _ = w.Write([]byte(`{"acknowledged":true}`))
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func bytesLines(b []byte) [][]byte {
+	var out [][]byte
+	start := 0
+	for i, c := range b {
+		if c == '\n' {
+			out = append(out, b[start:i])
+			start = i + 1
+		}
+	}
+	if start < len(b) {
+		out = append(out, b[start:])
+	}
+	return out
+}
+
+// fakeSystem is occulited's system API as the metrics poller reads it: a few statistics.
+func fakeSystem() *httptest.Server {
+	mux := http.NewServeMux()
+	j := func(v any) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(v)
+		}
+	}
+	mux.HandleFunc("/api/system/v1/service-messages", j(map[string]any{"count": 2, "messages": []map[string]any{{"interface": "HmIP-RF", "address": "000A1BE9A1B2C3:0", "key": "LOW_BAT"}, {"interface": "BidCos-RF", "address": "MEQ0123456:0", "key": "UNREACH"}}}))
+	mux.HandleFunc("/api/system/v1/radio/health", j(map[string]any{"interfaces": []map[string]any{{"interface": "HmIP-RF", "address": "3014F711A0001F58A9A1B2C3", "type": "HmIP-RFUSB", "connected": true, "duty_cycle": 4}}, "errors": map[string]string{}, "rates": map[string]any{"HmIP-RF": []map[string]any{{"t": time.Now().UTC().Format(time.RFC3339), "in": 2.5, "up": true}}}, "busy": false}))
+	mux.HandleFunc("/api/system/v1/radio/subscribers/reachability", j(map[string]any{"subscribers": []map[string]any{{"interface": "HmIP-RF", "id": "occulited", "url": "http://127.0.0.1:1999", "reachable": true}}}))
+	mux.HandleFunc("/api/system/v1/radio/subscribers/stalls", j(map[string]any{"stalls": []map[string]any{}}))
+	mux.HandleFunc("/api/system/v1/services", j(map[string]any{"systemd": true, "services": []map[string]any{{"id": "rfd", "kind": "system", "category": "radio", "running": true, "pid": os.Getpid()}, {"id": "addon-forwarder", "kind": "addon", "category": "addon", "running": true, "pid": os.Getpid()}}}))
+	return httptest.NewServer(mux)
+}
+
 func (h *hook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/dev/hook/bodies" {
 		h.mu.Lock()
@@ -126,13 +180,20 @@ func TestServe(t *testing.T) {
 	defer cancel()
 	go src.Run(ctx)
 
+	sys := fakeSystem()
+	defer sys.Close()
+	poller := metrics.New(metrics.Options{SystemURL: sys.URL, Interval: func() time.Duration { return time.Duration(store.Settings().MetricsIntervalS) * time.Second }, Wants: pipe.WantsMetric, Emit: src.Emit, Events: src.EventsByInterface, Log: t.Logf})
+	go poller.Run(ctx)
+	store.OnChange = func() { apply(); poller.Kick(); hub.Broadcast() }
+
 	www := filepath.Join("..", "..", "ui", "dist")
-	h := httpapi.New(httpapi.Options{BasePath: "/addons/forwarder", WWW: www, Store: store, Pipeline: pipe, Source: src, Version: "dev", Started: time.Now(), Hub: hub})
+	h := httpapi.New(httpapi.Options{BasePath: "/addons/forwarder", WWW: www, Store: store, Pipeline: pipe, Source: src, Metrics: poller, Version: "dev", Started: time.Now(), Hub: hub})
 	hk := &hook{}
 	mux := http.NewServeMux()
 	mux.Handle("/addons/forwarder/", h)
 	mux.Handle("/dev/hook", hk)
 	mux.Handle("/dev/hook/", hk)
+	mux.HandleFunc("/dev/es/", fakeES)
 	mux.HandleFunc("/dev/push", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		var v any

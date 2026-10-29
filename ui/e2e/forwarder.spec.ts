@@ -153,3 +153,81 @@ test('an InfluxDB target with the clean preset previews line protocol; the secre
     await expect(page.getByTestId('selection-editor')).toBeVisible();
     await page.screenshot({path: `test-results/selection-${test.info().project.name}.png`});
 });
+
+test('a selection of metric groups, a Prometheus scrape target and an Elasticsearch target', async ({page}) => {
+    await page.goto('./');
+    // a selection of two metric groups, ticked in the editor's checklist
+    await page.getByRole('tab', {name: /Selections|Auswahlen/}).click();
+    await page.getByRole('button', {name: /Add selection|Auswahl hinzufügen/}).click();
+    const sdlg = page.getByTestId('selection-editor');
+    await sdlg.getByLabel('Name').fill('Metriken');
+    await sdlg.getByRole('checkbox', {name: /^\s*(Homematic events|Homematic-Ereignisse)\s*$/}).uncheck();
+    await sdlg.getByRole('checkbox', {name: /^\s*(System metrics|Systemmetriken)\s*$/}).check();
+    await expect(sdlg.locator('.fw-groups-head')).toHaveCount(2);
+    await sdlg.getByRole('checkbox', {name: /^CPU and load|^CPU und Last/}).check();
+    await sdlg.getByRole('checkbox', {name: /^Service messages|^Servicemeldungen/}).check();
+    await sdlg.getByRole('button', {name: /Save|Speichern/}).click();
+    await expect(sdlg).toBeHidden();
+    await expect(page.locator('.fw-card', {hasText: 'Metriken'})).toContainText(/cpu/);
+
+    // a Prometheus scrape target over that selection: the token is generated and shown once
+    await page.getByRole('tab', {name: /Targets|Ziele/}).click();
+    await page.getByRole('combobox', {name: /Target type|Zieltyp/}).selectOption('prometheus');
+    await page.getByRole('button', {name: /Add target|Ziel hinzufügen/}).click();
+    const dlg = page.getByTestId('target-editor');
+    await dlg.getByLabel('Name', {exact: true}).fill('Prom');
+    await dlg.getByLabel(/^Selection$|^Auswahl$/).selectOption({label: 'Metriken (0)'});
+    await expect(dlg.getByText(/shown after saving|nach dem Speichern/)).toBeVisible();
+    const token = await dlg.getByLabel(/Scrape token|Scrape-Token/).inputValue();
+    expect(token).toMatch(/^[0-9a-f]{48}$/);
+    await dlg.getByRole('tab', {name: /^Metrics$|^Metriken$/}).click();
+    await expect(dlg.getByLabel(/Metric name|Metrikname/)).toHaveValue(/homematic_/);
+    await dlg.getByRole('button', {name: /^Test|^Testen/}).click();
+    await expect(dlg.locator('.fw-test-result')).toContainText('homematic_forwarder_test');
+    await dlg.getByRole('button', {name: /Save|Speichern/}).click();
+    await expect(dlg).toBeHidden();
+    const card = page.locator('.fw-card', {hasText: 'Prom'});
+    await expect(card).toContainText('Prometheus scrape');
+    // the endpoint answers the metrics with the token, 401 without
+    const targets = (await (await page.request.get('api/v1/targets')).json()) as {id: string; name: string}[];
+    const id = targets.find((t) => t.name === 'Prom')?.id ?? '';
+    expect(id).not.toBe('');
+    await expect
+        .poll(async () => (await page.request.get(`metrics/${id}?token=${token}`)).text(), {timeout: 15_000})
+        .toMatch(/cpu_count\{host="[^"]+"\} [0-9]+/);
+    const text = await (await page.request.get(`metrics/${id}`, {headers: {Authorization: `Bearer ${token}`}})).text();
+    expect(text).toContain('service_messages_count{host=');
+    expect(text).toContain('type="LOW_BAT"} 1');
+    expect(text).toContain('forwarder_target_sent_total{target="Prom"');
+    expect((await page.request.get(`metrics/${id}`)).status()).toBe(401);
+    // the editor shows the endpoint's URL after saving, the token as set
+    await card.getByRole('button', {name: /Edit|Bearbeiten/}).click();
+    await expect(dlg.locator('.fw-scrape-url')).toContainText(`metrics/${id}`);
+    await expect(dlg.getByLabel(/Scrape token|Scrape-Token/)).toHaveAttribute('placeholder', /set|gesetzt/);
+    await dlg.getByRole('button', {name: /Cancel|Abbrechen/}).click();
+    // the system page shows the poll
+    await page.getByRole('tab', {name: /^System$/}).click();
+    await expect(page.locator('.fw-card', {hasText: /Metrics|Metriken/}).first()).toContainText(/cpu, service_messages|service_messages/);
+
+    // an Elasticsearch target against the dev receiver: preset documents, Test indexes one
+    await page.getByRole('tab', {name: /Targets|Ziele/}).click();
+    await page.getByRole('combobox', {name: /Target type|Zieltyp/}).selectOption('elastic');
+    await page.getByRole('button', {name: /Add target|Ziel hinzufügen/}).click();
+    await dlg.getByLabel('Name', {exact: true}).fill('Elastic');
+    await dlg.getByLabel(/^Selection$|^Auswahl$/).selectOption('');
+    await dlg.getByLabel('URL', {exact: true}).fill(`${DEV}/dev/es`);
+    await dlg.getByRole('tab', {name: /Documents|Dokumente/}).click();
+    await expect(dlg.getByLabel(/^Index$/)).toHaveValue(/homematic-/);
+    await expect(dlg.locator('.fw-tpl-out').first()).toContainText(/homematic-(event|metric)-20/);
+    await dlg.getByRole('button', {name: /Preview|Vorschau/}).click();
+    await expect(dlg.locator('.fw-preview')).toContainText('{"index":{"_index":"homematic-');
+    await expect(dlg.locator('.fw-preview')).toContainText('"@timestamp"');
+    await dlg.getByRole('button', {name: /^Test|^Testen/}).click();
+    await expect(dlg.locator('.fw-test-result')).toContainText(/1 document indexed/);
+    await dlg.getByRole('button', {name: /Save|Speichern/}).click();
+    await expect(dlg).toBeHidden();
+    const ecard = page.locator('.fw-card', {hasText: 'Elastic'});
+    await expect(ecard).toContainText('Elasticsearch');
+    await expect(ecard).toContainText(/homematic-/);
+    await page.screenshot({path: `test-results/targets-0.2-${test.info().project.name}.png`, fullPage: true});
+});

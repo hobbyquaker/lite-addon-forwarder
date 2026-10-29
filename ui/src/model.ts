@@ -101,7 +101,41 @@ export interface Webhook {
     gzip: boolean;
 }
 
-export type TargetType = 'influx' | 'webhook';
+export interface Elastic {
+    url: string;
+    index: string;
+    document: string;
+    timestamp: boolean;
+    action: 'index' | 'create';
+    pipeline: string;
+    auth: 'none' | 'basic' | 'apikey' | 'bearer';
+    user: string;
+    gzip: boolean;
+    install_template: boolean;
+    template_pattern: string;
+    preset: string;
+}
+
+export interface Prometheus {
+    mode: 'scrape' | 'remote_write';
+    url: string;
+    auth: 'none' | 'basic' | 'bearer';
+    user: string;
+    name: string;
+    labels: NamedTemplate[];
+    stale_s: number;
+    preset: string;
+}
+
+export type TargetType = 'influx' | 'webhook' | 'elastic' | 'prometheus';
+
+/** The target types in the UI's order with their display names. */
+export const TARGET_TYPES: {type: TargetType; label: string}[] = [
+    {type: 'influx', label: 'InfluxDB'},
+    {type: 'webhook', label: 'HTTP webhook'},
+    {type: 'elastic', label: 'Elasticsearch / OpenSearch'},
+    {type: 'prometheus', label: 'Prometheus'},
+];
 
 export interface Target {
     id: string;
@@ -110,12 +144,14 @@ export interface Target {
     enabled: boolean;
     selection: string;
     batch: {size: number; interval_ms: number; max_bytes: number};
-    queue: {max_records: number};
+    queue: {max_records: number; spill_mb: number};
     retry: {min_ms: number; max_ms: number};
     tls: {insecure: boolean; ca: string; server_name: string};
     timeout_s: number;
     influx?: Influx;
     webhook?: Webhook;
+    elastic?: Elastic;
+    prometheus?: Prometheus;
     secrets: Record<string, boolean>;
     set_secrets?: Record<string, string>;
     clear_secrets?: string[];
@@ -136,6 +172,8 @@ export interface Status {
     last_error_at: string;
     queued: number;
     in_flight: number;
+    spilled: number;
+    spill_bytes: number;
     sent: number;
     batches: number;
     dropped: number;
@@ -167,8 +205,19 @@ export interface SourceStats {
     inventory_at: string;
 }
 
+export interface MetricsStats {
+    last_poll: string;
+    records: number;
+    duration_ms: number;
+    groups: string[];
+    polls: number;
+    errors: Record<string, string>;
+    interval_s: number;
+}
+
 export interface StatusMessage {
     source: SourceStats;
+    metrics?: MetricsStats;
     targets: Status[];
 }
 
@@ -177,6 +226,7 @@ export interface Health {
     started: string;
     uptime_s: number;
     source: SourceStats;
+    metrics: MetricsStats;
     targets: number;
     selections: number;
     types: TargetType[];
@@ -207,7 +257,30 @@ export interface Counted {
     count: number;
 }
 
+export interface MetricInfo {
+    name: string;
+    labels: string[];
+    unit: string;
+    doc: Record<string, string>;
+}
+
+export interface MetricGroupInfo {
+    name: string;
+    source: 'homematic' | 'host';
+    title: Record<string, string>;
+    doc: Record<string, string>;
+    metrics: MetricInfo[];
+}
+
+export interface StreamInfo {
+    name: string;
+    title: Record<string, string>;
+    doc: Record<string, string>;
+}
+
 export interface Inventory {
+    metric_groups?: MetricGroupInfo[];
+    log_streams?: StreamInfo[];
     interfaces: {name: string; protocol: string; running: boolean; devices: number}[];
     devices: DeviceInfo[];
     rooms: string[];
@@ -277,6 +350,10 @@ export interface Presets {
     influx: Record<string, Influx>;
     influx_order: string[];
     webhook: Record<string, Webhook>;
+    elastic: Record<string, Elastic>;
+    elastic_order: string[];
+    prometheus: Record<string, Prometheus>;
+    prometheus_order: string[];
     defaults: Record<TargetType, Target>;
 }
 
@@ -284,6 +361,52 @@ export interface Settings {
     snapshot: boolean;
     recent: number;
     lang: string;
+    metrics_interval_s: number;
+}
+
+/** The secrets a target's form asks for, by its type and settings. */
+export function secretNames(t: Target): string[] {
+    switch (t.type) {
+        case 'influx':
+            return t.influx?.version === '1' ? ['password'] : ['token'];
+        case 'webhook':
+            return t.webhook?.auth === 'basic' ? ['password'] : t.webhook?.auth === 'bearer' ? ['token'] : [];
+        case 'elastic':
+            return t.elastic?.auth === 'basic' ? ['password'] : t.elastic?.auth === 'apikey' ? ['api_key'] : t.elastic?.auth === 'bearer' ? ['token'] : [];
+        case 'prometheus':
+            if (t.prometheus?.mode === 'remote_write') return t.prometheus.auth === 'basic' ? ['password'] : t.prometheus.auth === 'bearer' ? ['token'] : [];
+            return ['scrape_token'];
+    }
+    return [];
+}
+
+/** What a target card says about the target: its kind and where it goes. */
+export function describeTarget(t: Target): {kind: string; where: string} {
+    switch (t.type) {
+        case 'influx':
+            return {kind: `InfluxDB ${t.influx?.version ?? ''}`.trim(), where: t.influx?.url ?? ''};
+        case 'webhook':
+            return {kind: 'Webhook', where: t.webhook?.url ?? ''};
+        case 'elastic':
+            return {kind: 'Elasticsearch', where: `${t.elastic?.url ?? ''} → ${t.elastic?.index ?? ''}`};
+        case 'prometheus':
+            return t.prometheus?.mode === 'remote_write' ? {kind: 'Prometheus remote_write', where: t.prometheus.url} : {kind: 'Prometheus scrape', where: t.id ? `metrics/${t.id}` : ''};
+    }
+    return {kind: t.type, where: ''};
+}
+
+/** A random hex token for a scrape endpoint. */
+export function randomToken(): string {
+    const b = new Uint8Array(24);
+    crypto.getRandomValues(b);
+    return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+}
+
+/** Bytes as a short text. */
+export function formatBytes(n: number): string {
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
 export interface TemplateHelp {

@@ -5,7 +5,7 @@
     // It knows the inventory (props) and asks `onmatch` for the count, so another addon with
     // the same selection model can host it with its own backend.
     import {Tabs} from 'occulite-ui';
-    import {t} from 'occulite-ui/i18n';
+    import {i18n, t} from 'occulite-ui/i18n';
 
     import ChipInput from './ChipInput.svelte';
     import {formatValue, ruleCount, type Inventory, type Match, type Selection} from './model.js';
@@ -58,6 +58,24 @@
     }
     const hasKind = (k: 'event' | 'metric' | 'log') => value.kinds.length === 0 || value.kinds.includes(k);
     const SOURCES = ['event', 'snapshot', 'sweep'];
+    const lang = $derived(i18n.language === 'de' ? 'de' : 'en');
+    // the metric groups the backend documents, by source; the prop is the fallback
+    const groups = $derived(inventory?.metric_groups ?? metricGroups.map((name) => ({name, source: 'host' as const, title: {de: name, en: name}, doc: {de: '', en: ''}, metrics: []})));
+    const groupSources: {source: 'homematic' | 'host'; label: string}[] = [
+        {source: 'homematic', label: 'Homematic statistics'},
+        {source: 'host', label: 'System metrics'},
+    ];
+    function toggleGroup(name: string, on: boolean) {
+        value.metric_groups = on ? [...new Set([...value.metric_groups, name])] : value.metric_groups.filter((x) => x !== name);
+    }
+    function tickGroups(source: string, on: boolean) {
+        const names = groups.filter((g) => g.source === source).map((g) => g.name);
+        if (on) value.metric_groups = [...new Set([...value.metric_groups, ...names])];
+        else {
+            const set = new Set(names);
+            value.metric_groups = value.metric_groups.filter((x) => !set.has(x));
+        }
+    }
 
     const counts = $derived.by(() => {
         const m = new Map<string, number>();
@@ -194,7 +212,25 @@
             <div class="fw-row">
                 <span class="fw-label">{t('Metric groups')}</span>
                 <div>
-                    <ChipInput bind:values={value.metric_groups} suggestions={metricGroups} label={t('Metric groups')} placeholder={metricGroups.length ? t('all') : t('(system metrics come with a later version)')} />
+                    <div class="fw-help">{t('None ticked: every group. A group is polled only while a target wants it.')}</div>
+                    {#each groupSources as gs (gs.source)}
+                        {@const own = groups.filter((g) => g.source === gs.source)}
+                        {#if own.length}
+                            <div class="fw-groups-head">
+                                <b>{t(gs.label)}</b>
+                                <button class="fw-link" type="button" onclick={() => tickGroups(gs.source, true)}>{t('all')}</button>
+                                <button class="fw-link" type="button" onclick={() => tickGroups(gs.source, false)}>{t('none')}</button>
+                            </div>
+                            <div class="fw-groups">
+                                {#each own as g (g.name)}
+                                    <label class="fw-group" title={g.metrics.map((m) => `${m.name}${m.labels.length ? '{' + m.labels.join(',') + '}' : ''}${m.unit ? ' [' + m.unit + ']' : ''} - ${m.doc[lang]}`).join('\n')}>
+                                        <input type="checkbox" checked={value.metric_groups.includes(g.name)} onchange={(e) => toggleGroup(g.name, (e.currentTarget as HTMLInputElement).checked)} />
+                                        <span class="fw-group-text"><span class="fw-group-title">{g.title[lang]} <code class="fw-faint">{g.name}</code></span><span class="fw-help">{g.doc[lang]}</span></span>
+                                    </label>
+                                {/each}
+                            </div>
+                        {/if}
+                    {/each}
                 </div>
             </div>
         {/if}

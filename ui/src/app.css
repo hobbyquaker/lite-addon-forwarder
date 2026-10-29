@@ -679,3 +679,63 @@ body,
     font-family: var(--hmm-font-mono);
     white-space: nowrap;
 }
+
+/* the metric groups in the selection editor */
+.fw-groups-head {
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+    margin: 10px 0 4px;
+}
+
+.fw-link {
+    border: 0;
+    background: none;
+    color: var(--hmm-accent, var(--hmm-link, inherit));
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.85em;
+    padding: 0;
+    text-decoration: underline;
+}
+
+.fw-groups {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
+    gap: 4px 14px;
+}
+
+.fw-group {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    padding: 4px 6px;
+    border-radius: var(--hmm-radius);
+}
+
+.fw-group:hover {
+    background: var(--hmm-surface-2, rgba(127, 127, 127, 0.08));
+}
+
+.fw-group input {
+    margin-top: 3px;
+}
+
+.fw-group-text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.fw-group-title code {
+    font-size: 0.85em;
+}
+
+.fw-scrape-url {
+    display: inline-block;
+    padding: 2px 6px;
+    border: 1px solid var(--hmm-border);
+    border-radius: var(--hmm-radius);
+    user-select: all;
+    word-break: break-all;
+}

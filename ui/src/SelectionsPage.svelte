@@ -74,6 +74,9 @@
         if (s.exclude_keys.length) parts.push(t('not') + ' ' + s.exclude_keys.join(', '));
         if (s.objects.length) parts.push(t('{n} ticked', {n: s.objects.length}));
         if (s.exclude_objects.length) parts.push(t('{n} excluded', {n: s.exclude_objects.length}));
+        if (s.metric_groups.length) parts.push(t('Metric groups') + ': ' + s.metric_groups.join(', '));
+        if (s.log_streams.length) parts.push(t('Log streams') + ': ' + s.log_streams.join(', '));
+        if (s.log_units.length) parts.push(s.log_units.join(', '));
         return parts.length ? parts.join(' · ') : t('everything');
     }
 </script>

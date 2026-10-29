@@ -8,7 +8,7 @@
     import ConfirmDialog from './ConfirmDialog.svelte';
     import TargetEditor from './TargetEditor.svelte';
     import {del, get, post} from './api.js';
-    import {clone, type SelectionView, type Status, type StatusMessage, type Target, type TargetType, type TargetView, type TestResult} from './model.js';
+    import {clone, describeTarget, formatBytes, TARGET_TYPES, type SelectionView, type Status, type StatusMessage, type Target, type TargetType, type TargetView, type TestResult} from './model.js';
 
     let {notices, status, selections, onchanged}: {notices: NoticesStore; status: StatusMessage | undefined; selections: SelectionView[]; onchanged: () => void} = $props();
 
@@ -140,8 +140,9 @@
 
 <div class="fw-toolbar">
     <select class="hmm-select" bind:value={addType} aria-label={t('Target type')}>
-        <option value="influx">InfluxDB</option>
-        <option value="webhook">{t('HTTP webhook')}</option>
+        {#each TARGET_TYPES as tt (tt.type)}
+            <option value={tt.type}>{t(tt.label)}</option>
+        {/each}
     </select>
     <button class="hmm-button" type="button" onclick={() => (editing = {target: undefined, type: addType})}>{t('Add target')}</button>
     <span class="fw-spacer"></span>
@@ -149,25 +150,27 @@
 </div>
 
 {#if loaded && targets.length === 0}
-    <div class="fw-empty">{t('No targets yet. Add one: an InfluxDB or an HTTP webhook, pick a selection, test it, save.')}</div>
+    <div class="fw-empty">{t('No targets yet. Add one: InfluxDB, a webhook, Elasticsearch or Prometheus; pick a selection, test it, save.')}</div>
 {/if}
 
 <div class="fw-cards">
     {#each targets as tv (tv.id)}
         {@const s = st(tv)}
+        {@const d = describeTarget(tv)}
         <div class="fw-card" class:disabled={!tv.enabled}>
             <div class="fw-card-head">
                 <span class="fw-pill {s?.state ?? 'idle'}" title={stateLabel(s)}>{stateLabel(s)}</span>
                 <h3 title={tv.name}>{tv.name}</h3>
-                <span class="fw-muted fw-small">{tv.type === 'influx' ? `InfluxDB ${tv.influx?.version ?? ''}` : t('Webhook')}</span>
+                <span class="fw-muted fw-small">{d.kind}</span>
             </div>
             <div class="fw-card-line fw-small">
-                <span class="fw-ellipsis fw-muted" title={tv.type === 'influx' ? tv.influx?.url : tv.webhook?.url}>{tv.type === 'influx' ? tv.influx?.url : tv.webhook?.url}</span>
+                <span class="fw-ellipsis fw-muted" title={d.where}>{d.where}</span>
                 <span class="fw-ellipsis">{t('Selection')}: {selectionName(tv.selection)}</span>
             </div>
             <div class="fw-stats">
                 <div class="fw-stat"><b>{s?.sent ?? 0}</b><span>{t('sent')}</span></div>
                 <div class="fw-stat"><b>{s?.queued ?? 0}</b><span>{t('queued')}</span></div>
+                <div class="fw-stat" title={s?.spill_bytes ? formatBytes(s.spill_bytes) : ''}><b>{s?.spilled ?? 0}</b><span>{t('on disk')}</span></div>
                 <div class="fw-stat"><b>{s?.dropped ?? 0}</b><span>{t('dropped')}</span></div>
                 <div class="fw-stat"><b>{s ? lag(s) : '–'}</b><span>{t('lag')}</span></div>
                 <div class="fw-stat"><b>{s?.batches ?? 0}</b><span>{t('batches')}</span></div>

@@ -33,6 +33,8 @@
     }
 
     const src = $derived(status?.source ?? health?.source);
+    const met = $derived(status?.metrics ?? health?.metrics);
+    const metErrors = $derived(Object.entries(met?.errors ?? {}));
     const when = (s: string | undefined) => (s && !s.startsWith('0001') ? formatDateTime(Date.parse(s)) : '–');
 </script>
 
@@ -86,9 +88,32 @@
                     <label for="fw-recent">{t('Recent records')}</label>
                     <div class="fw-inline"><input id="fw-recent" class="hmm-input" type="number" min="10" max="10000" bind:value={settings.recent} style="width:6em" /> {t('kept for the previews')}</div>
                 </div>
+                <div class="fw-row">
+                    <label for="fw-minterval">{t('Metrics interval')}</label>
+                    <div>
+                        <div class="fw-inline"><input id="fw-minterval" class="hmm-input" type="number" min="10" max="3600" bind:value={settings.metrics_interval_s} style="width:6em" /> s</div>
+                        <div class="fw-help">{t('How often the statistics and the system\'s figures are polled; only the groups a target\'s selection wants.')}</div>
+                    </div>
+                </div>
                 <div><button class="hmm-button" type="button" onclick={() => void save()} disabled={busy}>{t('Save')}</button></div>
             </div>
         {/if}
+    </div>
+
+    <div class="fw-card fw-about">
+        <div class="fw-card-head"><h3>{t('Metrics')}</h3><span class="fw-pill {metErrors.length ? 'retrying' : met?.polls ? 'ok' : 'idle'}">{metErrors.length ? t('{n} errors', {n: metErrors.length}) : met?.polls ? t('polling') : t('state.idle')}</span></div>
+        <dl>
+            <dt>{t('Last poll')}</dt>
+            <dd>{when(met?.last_poll)}{#if met?.polls} ({met.duration_ms} ms){/if}</dd>
+            <dt>{t('Groups polled')}</dt>
+            <dd class="fw-mono fw-small">{met?.groups?.length ? met.groups.join(', ') : t('none - no target wants metrics')}</dd>
+            <dt>{t('Records per poll')}</dt>
+            <dd>{met?.records ?? 0}</dd>
+            {#each metErrors as [g, e] (g)}
+                <dt class="fw-error">{g}</dt>
+                <dd class="fw-error">{e}</dd>
+            {/each}
+        </dl>
     </div>
 
     <div class="fw-card fw-about">

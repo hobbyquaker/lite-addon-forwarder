@@ -16,7 +16,8 @@
         id = '',
         label = '',
         disabled = false,
-    }: {value?: string; selection?: string; placeholder?: string; multiline?: boolean; rows?: number; id?: string; label?: string; disabled?: boolean} = $props();
+        oninput = undefined,
+    }: {value?: string; selection?: string; placeholder?: string; multiline?: boolean; rows?: number; id?: string; label?: string; disabled?: boolean; oninput?: () => void} = $props();
 
     let output = $state('');
     let error = $state('');
@@ -67,9 +68,9 @@
 
 <div class="fw-tpl">
     {#if multiline}
-        <textarea {id} class="fw-mono" {rows} bind:value {placeholder} {disabled} aria-label={label} spellcheck="false"></textarea>
+        <textarea {id} class="fw-mono" {rows} bind:value {placeholder} {disabled} aria-label={label} spellcheck="false" {oninput}></textarea>
     {:else}
-        <input {id} class="hmm-input fw-mono" type="text" bind:value {placeholder} {disabled} aria-label={label} spellcheck="false" />
+        <input {id} class="hmm-input fw-mono" type="text" bind:value {placeholder} {disabled} aria-label={label} spellcheck="false" {oninput} />
     {/if}
     <div class="fw-tpl-out" class:fw-error={!!error} title={error || title}>
         {#if error}
