@@ -21,8 +21,9 @@ import (
 	"github.com/hobbyquaker/lite-addon-forwarder/internal/selection"
 )
 
-// Format is the configuration file's format version.
-const Format = 1
+// Format is the configuration file's format version: 2 since the queue's spill (a file of
+// format 1 gets the default spill on every target).
+const Format = 2
 
 // Settings are the general settings.
 type Settings struct {
@@ -50,9 +51,13 @@ type Batch struct {
 	MaxBytes   int `json:"max_bytes"`
 }
 
-// Queue is a target's RAM queue.
+// Queue is a target's queue: the records in memory and the overflow on disk.
 type Queue struct {
 	MaxRecords int `json:"max_records"`
+	// SpillMB caps the overflow on disk (the addon's var/spill/<target id>/), which takes the
+	// records when the memory is full - a target that is down - and keeps the queue over a
+	// restart; when it is full the oldest go. 0 switches the spill off.
+	SpillMB int `json:"spill_mb"`
 }
 
 // Retry is a target's backoff.
@@ -224,7 +229,7 @@ var SecretNames = map[string][]string{
 
 // DefaultTarget is a new target's defaults.
 func DefaultTarget(typ string) Target {
-	t := Target{Type: typ, Enabled: true, Batch: Batch{Size: 500, IntervalMS: 5000, MaxBytes: 1 << 20}, Queue: Queue{MaxRecords: 50000}, Retry: Retry{MinMS: 1000, MaxMS: 60000}, TimeoutS: 15, SecretsSet: map[string]bool{}}
+	t := Target{Type: typ, Enabled: true, Batch: Batch{Size: 500, IntervalMS: 5000, MaxBytes: 1 << 20}, Queue: Queue{MaxRecords: 50000, SpillMB: 50}, Retry: Retry{MinMS: 1000, MaxMS: 60000}, TimeoutS: 15, SecretsSet: map[string]bool{}}
 	switch typ {
 	case "influx":
 		t.Influx = &Influx{Version: "2", Gzip: true, Preset: "clean", Event: InfluxPresets["clean"].Event, Metric: InfluxPresets["clean"].Metric, Log: InfluxPresets["clean"].Log}
@@ -280,6 +285,12 @@ func (t *Target) Validate() error {
 	}
 	if t.Queue.MaxRecords < 100 || t.Queue.MaxRecords > 1000000 {
 		t.Queue.MaxRecords = d.Queue.MaxRecords
+	}
+	if t.Queue.SpillMB < 0 {
+		t.Queue.SpillMB = 0
+	}
+	if t.Queue.SpillMB > 10000 {
+		t.Queue.SpillMB = 10000
 	}
 	if t.Retry.MinMS < 100 {
 		t.Retry.MinMS = d.Retry.MinMS
@@ -535,8 +546,17 @@ func Open(dir string) (*Store, error) {
 	if s.file.Settings.MetricsIntervalS < 10 || s.file.Settings.MetricsIntervalS > 3600 {
 		s.file.Settings.MetricsIntervalS = DefaultSettings().MetricsIntervalS
 	}
+	migrate := s.file.Format < 2
 	for i := range s.file.Targets {
 		s.decorate(&s.file.Targets[i])
+		if migrate {
+			s.file.Targets[i].Queue.SpillMB = DefaultTarget(s.file.Targets[i].Type).Queue.SpillMB
+		}
+	}
+	if migrate && len(s.file.Targets) > 0 {
+		if err := s.save(); err != nil {
+			return nil, err
+		}
 	}
 	return s, nil
 }

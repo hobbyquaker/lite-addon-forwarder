@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math/rand/v2"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -64,6 +65,9 @@ type Manager struct {
 	Build func(config.Target) (target.Target, error)
 	// OnChange is called when a status changed in a way worth pushing (a send, an error).
 	OnChange func()
+	// SpillDir is where the targets' overflow goes (one directory per target id); "" disables
+	// the spill.
+	SpillDir string
 }
 
 // New makes a manager.
@@ -101,9 +105,9 @@ func (m *Manager) Apply(targets []config.Target, selections []selection.Selectio
 		if w != nil {
 			w.stop()
 			q = w.q
-			q.resize(t.Queue.MaxRecords)
+			q.resize(t.Queue.MaxRecords, m.spillDir(t.ID), int64(t.Queue.SpillMB)<<20)
 		} else {
-			q = newQueue(t.Queue.MaxRecords)
+			q = newQueue(t.Queue.MaxRecords, m.spillDir(t.ID), int64(t.Queue.SpillMB)<<20)
 		}
 		nw := &worker{m: m, cfg: t, key: key, q: q, sel: sel, status: Status{ID: t.ID, Name: t.Name, Type: t.Type, Enabled: t.Enabled}}
 		if w != nil {
@@ -138,9 +142,17 @@ func (m *Manager) Apply(targets []config.Target, selections []selection.Selectio
 	for id, w := range m.workers {
 		if !seen[id] {
 			w.stop()
+			w.q.remove_()
 			delete(m.workers, id)
 		}
 	}
+}
+
+func (m *Manager) spillDir(id string) string {
+	if m.SpillDir == "" || id == "" {
+		return ""
+	}
+	return filepath.Join(m.SpillDir, id)
 }
 
 // fingerprint is what a worker is built from: the target's configuration and secrets.
@@ -163,8 +175,8 @@ func (m *Manager) Dispatch(r *record.Record) {
 			continue
 		}
 		if w.selection().Match(r.Subject()) {
-			if w.q.push(r) {
-				w.overflow()
+			if n := w.q.push(r); n > 0 {
+				w.overflow(n)
 			}
 		}
 	}
@@ -242,12 +254,14 @@ func (m *Manager) Clear(id string) bool {
 	return true
 }
 
-// Stop ends every worker; the queues are lost (the RAM buffer is not persisted in this version).
+// Stop ends every worker and writes what is still queued to the spill, so a restart goes on
+// where it stopped (a target without a spill loses its queue).
 func (m *Manager) Stop() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for id, w := range m.workers {
 		w.stop()
+		w.q.persist()
 		delete(m.workers, id)
 	}
 }
@@ -297,6 +311,7 @@ func (w *worker) snapshot() Status {
 	s := w.status
 	w.mu.Unlock()
 	s.Queued, s.InFlight = w.q.len(), w.q.inflight()
+	s.Spilled, s.SpillBytes = w.q.spilled()
 	if oldest, ok := w.q.oldest(); ok {
 		s.LagMS = w.m.Now().Sub(oldest).Milliseconds()
 		if s.LagMS < 0 {
@@ -306,10 +321,10 @@ func (w *worker) snapshot() Status {
 	return s
 }
 
-func (w *worker) overflow() {
+func (w *worker) overflow(n int) {
 	w.mu.Lock()
-	w.status.Overflow++
-	w.status.Dropped++
+	w.status.Overflow += int64(n)
+	w.status.Dropped += int64(n)
 	w.mu.Unlock()
 }
 
@@ -459,7 +474,10 @@ func (w *worker) backoff(attempt int) time.Duration {
 	return d + j
 }
 
-// queue is a bounded FIFO of records; the oldest not in flight is dropped on overflow.
+// queue is a bounded FIFO of records in memory with an overflow on disk (the spill): a record
+// that finds the memory full goes to the spill, and the memory is refilled from the spill's
+// oldest segment as it drains, so the order holds. Without a spill the oldest record not in
+// flight is dropped on overflow.
 type queue struct {
 	mu       sync.Mutex
 	items    []*record.Record
@@ -467,9 +485,25 @@ type queue struct {
 	inFlight int
 	first    time.Time // when the oldest unsent record arrived, for the batch timer
 	wake     chan struct{}
+	sp       *spill
 }
 
-func newQueue(max int) *queue { return &queue{max: max} }
+func newQueue(max int, dir string, spillBytes int64) *queue {
+	return &queue{max: max, sp: openSpill(dir, spillBytes, segmentSize(max))}
+}
+
+// segmentSize is how many records a spill segment holds: half the memory at most, so a segment
+// always fits once the memory drains.
+func segmentSize(max int) int {
+	n := max / 2
+	if n > 500 {
+		n = 500
+	}
+	if n < 10 {
+		n = 10
+	}
+	return n
+}
 
 func (q *queue) setWake(ch chan struct{}) {
 	q.mu.Lock()
@@ -477,23 +511,37 @@ func (q *queue) setWake(ch chan struct{}) {
 	q.mu.Unlock()
 }
 
-func (q *queue) resize(max int) {
+func (q *queue) resize(max int, dir string, spillBytes int64) {
 	q.mu.Lock()
 	q.max = max
+	if q.sp.dir != dir || q.sp.max != spillBytes {
+		if q.sp.dir == dir {
+			q.sp.max = spillBytes
+			q.sp.segSize = segmentSize(max)
+		} else {
+			q.sp.remove()
+			q.sp = openSpill(dir, spillBytes, segmentSize(max))
+		}
+	}
 	q.mu.Unlock()
 }
 
-// push adds a record; true when one had to be dropped for it.
-func (q *queue) push(r *record.Record) (dropped bool) {
+// push adds a record; it answers how many older records had to be dropped for it.
+func (q *queue) push(r *record.Record) (dropped int) {
 	q.mu.Lock()
-	if len(q.items) >= q.max {
+	if !q.sp.empty() || len(q.items) >= q.max {
+		if q.sp.enabled() {
+			dropped = q.sp.add(r)
+			q.mu.Unlock()
+			return dropped
+		}
 		if q.inFlight >= len(q.items) {
 			q.mu.Unlock()
-			return true // everything queued is in flight: the newcomer goes
+			return 1 // everything queued is in flight: the newcomer goes
 		}
 		copy(q.items[q.inFlight:], q.items[q.inFlight+1:])
 		q.items = q.items[:len(q.items)-1]
-		dropped = true
+		dropped = 1
 	}
 	if len(q.items) == q.inFlight {
 		q.first = time.Now()
@@ -508,6 +556,46 @@ func (q *queue) push(r *record.Record) (dropped bool) {
 		}
 	}
 	return dropped
+}
+
+// refill moves the spill's oldest records into the memory while they fit. Under the lock.
+func (q *queue) refill() {
+	for !q.sp.empty() && len(q.items)+q.sp.oldestSize() <= q.max {
+		recs := q.sp.take()
+		if len(recs) == 0 {
+			continue
+		}
+		if len(q.items) == q.inFlight {
+			q.first = time.Now()
+		}
+		q.items = append(q.items, recs...)
+	}
+}
+
+// spilled answers how many records wait on disk (or for their segment) and the disk bytes.
+func (q *queue) spilled() (int, int64) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.sp.records(), q.sp.bytes
+}
+
+// persist writes the memory's records to the spill ahead of what is there, for a restart.
+func (q *queue) persist() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if !q.sp.enabled() {
+		return
+	}
+	q.sp.prepend(q.items)
+	q.items = nil
+	q.sp.flush()
+}
+
+// remove_ deletes the spill directory (the target is gone).
+func (q *queue) remove_() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.sp.remove()
 }
 
 func (q *queue) len() int {
@@ -545,6 +633,7 @@ func (q *queue) clear() int {
 	defer q.mu.Unlock()
 	n := len(q.items) - q.inFlight
 	q.items = q.items[:q.inFlight]
+	n += q.sp.clear()
 	return n
 }
 
@@ -554,6 +643,7 @@ func (q *queue) remove(n int) {
 		n = len(q.items)
 	}
 	q.items = append([]*record.Record(nil), q.items[n:]...)
+	q.refill()
 	q.mu.Unlock()
 }
 
@@ -562,6 +652,7 @@ func (q *queue) remove(n int) {
 func (q *queue) wait(ctx context.Context, size int, interval time.Duration, wake <-chan struct{}) []*record.Record {
 	for {
 		q.mu.Lock()
+		q.refill()
 		n := len(q.items)
 		first := q.first
 		q.mu.Unlock()

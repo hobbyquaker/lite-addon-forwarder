@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -237,5 +239,132 @@ func TestBackoff(t *testing.T) {
 		if d < time.Duration(float64(want)*0.74) || d > time.Duration(float64(want)*1.26) {
 			t.Errorf("attempt %d: %s", i, d)
 		}
+	}
+}
+
+func TestSpillWhileDownAndAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	f := &fake{fail: 1 << 30}
+	m := New(nil)
+	m.SpillDir = dir
+	m.Build = func(config.Target) (target.Target, error) { return f, nil }
+	c := cfg("a", "")
+	c.Batch.Size = 50
+	c.Queue.MaxRecords, c.Queue.SpillMB = 100, 1
+	m.Apply([]config.Target{c}, nil)
+	// 400 records at a target that is down: 100 in memory, the rest on disk (segments of 50) or
+	// waiting for their segment; nothing dropped
+	for i := 1; i <= 400; i++ {
+		r := ev(fmt.Sprintf("K%03d", i))
+		r.SetValue(json.RawMessage("7"), nil)
+		r.Type = "INTEGER"
+		m.Dispatch(r)
+	}
+	waitFor(t, func() bool { return m.Status()[0].State == "retrying" })
+	st := m.Status()[0]
+	if st.Queued != 100 || st.Spilled != 300 || st.Dropped != 0 || st.SpillBytes == 0 {
+		t.Fatalf("while down: %+v", st)
+	}
+	files, _ := filepath.Glob(filepath.Join(dir, "a", "*.ndjson"))
+	if len(files) != 6 {
+		t.Fatalf("segments: %v", files)
+	}
+	// a stop writes the memory ahead of the segments
+	m.Stop()
+	files, _ = filepath.Glob(filepath.Join(dir, "a", "*.ndjson"))
+	if len(files) != 7 {
+		t.Fatalf("after stop: %v", files)
+	}
+	// a restart with the target up: everything arrives, in order, the integer value intact
+	f2 := &fake{}
+	m2 := New(nil)
+	m2.SpillDir = dir
+	m2.Build = func(config.Target) (target.Target, error) { return f2, nil }
+	defer m2.Stop()
+	m2.Apply([]config.Target{c}, nil)
+	waitFor(t, func() bool {
+		n := 0
+		for _, b := range f2.batches() {
+			n += len(b)
+		}
+		return n == 400
+	})
+	var all []string
+	for _, b := range f2.batches() {
+		all = append(all, b...)
+	}
+	for i, k := range all {
+		if want := fmt.Sprintf("K%03d", i+1); k != want {
+			t.Fatalf("order: %d is %s, want %s", i, k, want)
+		}
+	}
+	st = m2.Status()[0]
+	if st.Sent != 400 || st.Spilled != 0 || st.Queued != 0 || st.SpillBytes != 0 {
+		t.Errorf("after restart: %+v", st)
+	}
+	files, _ = filepath.Glob(filepath.Join(dir, "a", "*.ndjson"))
+	if len(files) != 0 {
+		t.Errorf("segments left: %v", files)
+	}
+	// a removed target takes its directory with it
+	m2.Apply(nil, nil)
+	if _, err := os.Stat(filepath.Join(dir, "a")); !os.IsNotExist(err) {
+		t.Error("spill directory kept after the target went")
+	}
+}
+
+func TestSpillCapAndClear(t *testing.T) {
+	dir := t.TempDir()
+	sp := openSpill(dir, 12000, 10)
+	dropped := 0
+	for i := 0; i < 200; i++ {
+		dropped += sp.add(ev(fmt.Sprintf("K%03d", i)))
+	}
+	if sp.bytes > 12000 || dropped == 0 || sp.records()+dropped != 200 || len(sp.segments) < 2 {
+		t.Fatalf("cap: bytes %d dropped %d records %d", sp.bytes, dropped, sp.records())
+	}
+	// the oldest went, the newest stayed
+	first := sp.take()
+	if len(first) != 10 || first[0].Key == "K000" {
+		t.Errorf("oldest kept: %v", first[0].Key)
+	}
+	// a reopen finds the segments
+	sp2 := openSpill(dir, 12000, 10)
+	if sp2.records() != sp.records() || sp2.bytes != sp.bytes {
+		t.Errorf("reopen: %d/%d vs %d/%d", sp2.records(), sp2.bytes, sp.records(), sp.bytes)
+	}
+	if n := sp2.clear(); n == 0 || sp2.records() != 0 || sp2.bytes != 0 {
+		t.Errorf("clear: %d", n)
+	}
+	if files, _ := filepath.Glob(filepath.Join(dir, "*")); len(files) != 0 {
+		t.Errorf("files after clear: %v", files)
+	}
+	// without a spill the queue drops the oldest as before
+	q := newQueue(2, "", 0)
+	q.push(ev("A"))
+	q.push(ev("B"))
+	if n := q.push(ev("C")); n != 1 || q.len() != 2 {
+		t.Errorf("no spill: dropped %d len %d", n, q.len())
+	}
+	if n, b := q.spilled(); n != 0 || b != 0 {
+		t.Error("spilled without a spill")
+	}
+	// a Clear through the manager drops the spill too
+	f := &fake{fail: 1 << 30}
+	m := New(nil)
+	m.SpillDir = dir
+	m.Build = func(config.Target) (target.Target, error) { return f, nil }
+	defer m.Stop()
+	c := cfg("b", "")
+	c.Queue.MaxRecords, c.Queue.SpillMB = 100, 1
+	m.Apply([]config.Target{c}, nil)
+	for i := 0; i < 250; i++ {
+		m.Dispatch(ev("K"))
+	}
+	waitFor(t, func() bool { return m.Status()[0].Spilled == 150 })
+	m.Clear("b")
+	st := m.Status()[0]
+	if st.Spilled != 0 || st.Queued > 50 || st.Dropped < 200 {
+		t.Errorf("after clear: %+v", st)
 	}
 }

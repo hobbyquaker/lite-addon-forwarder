@@ -115,6 +115,7 @@ func TestServe(t *testing.T) {
 	}
 	client := litesource.New(lite.URL, addonkit.StaticToken("tok"))
 	pipe := pipeline.New(t.Logf)
+	pipe.SpillDir = filepath.Join(dir, "var", "spill")
 	hub := httpapi.NewHub()
 	pipe.OnChange = hub.Broadcast
 	apply := func() { pipe.Apply(store.TargetsWithSecrets(), store.Selections()) }

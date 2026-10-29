@@ -86,6 +86,7 @@ func run(addonDir, id string, port int, base, basePath, www, tokenFile string, n
 	hub := httpapi.NewHub()
 	pipe := pipeline.New(logf)
 	pipe.OnChange = hub.Broadcast
+	pipe.SpillDir = filepath.Join(addonDir, "var", "spill")
 	apply := func() { pipe.Apply(store.TargetsWithSecrets(), store.Selections()) }
 	store.OnChange = func() { apply(); hub.Broadcast() }
 	apply()
