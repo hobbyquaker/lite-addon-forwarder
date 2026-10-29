@@ -6,7 +6,10 @@
 /addon/forwarder/app/
 /addon/forwarder/bin/
 /addon/forwarder/versions
-/addon/forwarder/etc/
+# etc/ holds the tracked proxy rule (lighttpd.conf, packaged) and, on a system, the configuration and the secrets
+/addon/forwarder/etc/forwarder.json
+/addon/forwarder/etc/secrets.json
+/addon/forwarder/etc/*.tmp
 /addon/forwarder/var/
 /ui/test-results/
 /ui/playwright-report/
