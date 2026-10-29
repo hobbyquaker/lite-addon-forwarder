@@ -8,3 +8,5 @@
 /addon/forwarder/versions
 /addon/forwarder/etc/
 /addon/forwarder/var/
+/ui/test-results/
+/ui/playwright-report/
