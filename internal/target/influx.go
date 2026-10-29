@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -142,6 +143,20 @@ func (in *Influx) Line(r *record.Record) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("tag: %w", err)
 		}
+		if name == "*" {
+			// every label of a metric (or field of a log line) as a tag, sorted
+			for _, k := range sortedLabelKeys(r) {
+				v := labelOf(r, k)
+				if v == "" {
+					continue
+				}
+				b.WriteByte(',')
+				b.WriteString(escape(k, tagEsc))
+				b.WriteByte('=')
+				b.WriteString(escape(v, tagEsc))
+			}
+			continue
+		}
 		value, err := tag.value.Render(ctx)
 		if err != nil {
 			return "", fmt.Errorf("tag %s: %w", name, err)
@@ -198,6 +213,27 @@ func (in *Influx) Line(r *record.Record) (string, error) {
 	b.WriteByte(' ')
 	b.WriteString(strconv.FormatInt(r.TS.UnixNano(), 10))
 	return b.String(), nil
+}
+
+// sortedLabelKeys answers the keys of a metric's labels or a log line's fields.
+func sortedLabelKeys(r *record.Record) []string {
+	m := r.Labels
+	if r.Kind == record.KindLog {
+		m = r.Fields
+	}
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func labelOf(r *record.Record, k string) string {
+	if r.Kind == record.KindLog {
+		return r.Fields[k]
+	}
+	return r.Labels[k]
 }
 
 // nativeField writes a record's own value: numbers as floats (one type per field whatever the

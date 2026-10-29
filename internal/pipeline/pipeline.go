@@ -166,6 +166,20 @@ func (m *Manager) Dispatch(r *record.Record) {
 	}
 }
 
+// WantsMetric tells whether any enabled target's selection takes metrics of the group, so the
+// poller reads only what is forwarded.
+func (m *Manager) WantsMetric(group string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	subj := selection.Subject{Kind: record.KindMetric, MetricGroup: group}
+	for _, w := range m.workers {
+		if w.cfg.Enabled && w.tgt != nil && w.selection().Match(subj) {
+			return true
+		}
+	}
+	return false
+}
+
 // Matches tells which targets would take a record (for the UI's preview).
 func (m *Manager) Matches(r *record.Record) []string {
 	m.mu.Lock()

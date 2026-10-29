@@ -60,6 +60,13 @@ func TestInfluxLine(t *testing.T) {
 	if want := `STATE,interface=BidCos-RF,device=ABC,channel=1,address=ABC:1,device_name=Lampe\,\ Flur value=true,value_num=1 1000`; line != want {
 		t.Errorf("bool: got  %s\nwant %s", line, want)
 	}
+	// a metric with the clean preset: every label as a tag (the "*" tag), the unit, the name as the field
+	m := record.Metric(time.Unix(1000, 0), "cpu", "usage_percent", 12.5, map[string]string{"mode": "total", "host": "ccu"})
+	m.Unit = "%"
+	line, err = in.Line(m)
+	if err != nil || line != `cpu,host=ccu,mode=total,unit=% usage_percent=12.5 1000000000000` {
+		t.Errorf("metric: %s %v", line, err)
+	}
 	// per_device: field per key, string value quoted
 	cfg.Influx.Event = config.InfluxPresets["per_device"].Event
 	in, _ = NewInflux(cfg)

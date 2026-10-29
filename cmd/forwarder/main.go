@@ -21,6 +21,7 @@ import (
 	"github.com/hobbyquaker/ccu-addon-kit/go/litesource"
 	"github.com/hobbyquaker/lite-addon-forwarder/internal/config"
 	"github.com/hobbyquaker/lite-addon-forwarder/internal/httpapi"
+	"github.com/hobbyquaker/lite-addon-forwarder/internal/metrics"
 	"github.com/hobbyquaker/lite-addon-forwarder/internal/pipeline"
 	"github.com/hobbyquaker/lite-addon-forwarder/internal/source"
 )
@@ -99,6 +100,19 @@ func run(addonDir, id string, port int, base, basePath, www, tokenFile string, n
 	})
 	go src.Run(ctx)
 
+	// the statistics and the host's figures, polled while a target wants them
+	poller := metrics.New(metrics.Options{
+		SystemURL: base,
+		HTTP:      &http.Client{Transport: &addonkit.AuthTransport{Source: token}, Timeout: 20 * time.Second},
+		Interval:  func() time.Duration { return time.Duration(store.Settings().MetricsIntervalS) * time.Second },
+		Wants:     pipe.WantsMetric,
+		Emit:      src.Emit,
+		Events:    src.EventsByInterface,
+		Log:       logf,
+	})
+	go poller.Run(ctx)
+	store.OnChange = func() { apply(); poller.Kick(); hub.Broadcast() }
+
 	wrap := func(h http.Handler) http.Handler { return h }
 	if !noSession {
 		// the shell's admin session, or an API token of the scope addon:forwarder (a program that
@@ -108,7 +122,7 @@ func run(addonDir, id string, port int, base, basePath, www, tokenFile string, n
 		}})
 		wrap = c.Handler
 	}
-	h := httpapi.New(httpapi.Options{BasePath: basePath, WWW: www, Store: store, Pipeline: pipe, Source: src, Wrap: wrap, Version: version, Started: time.Now(), Hub: hub})
+	h := httpapi.New(httpapi.Options{BasePath: basePath, WWW: www, Store: store, Pipeline: pipe, Source: src, Metrics: poller, Wrap: wrap, Version: version, Started: time.Now(), Hub: hub})
 	l, err := addonkit.Listen(port, "")
 	if err != nil {
 		return err

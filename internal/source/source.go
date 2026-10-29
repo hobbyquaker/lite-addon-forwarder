@@ -44,6 +44,8 @@ type Source struct {
 	ringPos int
 	ringN   int
 	stats   Stats
+	// perIface counts the stream's events per interface, for the rpc_events metrics
+	perIface map[string]int64
 }
 
 // Stats is the source's state for the UI.
@@ -88,7 +90,7 @@ func New(o Options) *Source {
 	if o.Recent == nil {
 		o.Recent = func() int { return 500 }
 	}
-	return &Source{o: o, chans: map[string]*chanInfo{}, devs: map[string]*devInfo{}}
+	return &Source{o: o, chans: map[string]*chanInfo{}, devs: map[string]*devInfo{}, perIface: map[string]int64{}}
 }
 
 // Run runs the source until ctx ends.
@@ -180,6 +182,7 @@ func (s *Source) runEvents(ctx context.Context) {
 						s.mu.Lock()
 						s.stats.Events++
 						s.stats.LastEvent = r.TS
+						s.perIface[r.Interface]++
 						s.mu.Unlock()
 					}
 				}
@@ -445,6 +448,17 @@ func (s *Source) refreshInventory(ctx context.Context, only string) {
 	s.stats.Datapoints = n
 	s.stats.Inventory = time.Now()
 	s.mu.Unlock()
+}
+
+// EventsByInterface answers the stream's event count per interface since the start.
+func (s *Source) EventsByInterface() map[string]int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string]int64, len(s.perIface))
+	for k, v := range s.perIface {
+		out[k] = v
+	}
+	return out
 }
 
 // Stats answers the source's state.

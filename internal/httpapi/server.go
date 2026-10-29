@@ -18,6 +18,7 @@ import (
 
 	"github.com/hobbyquaker/ccu-addon-kit/go/addonkit"
 	"github.com/hobbyquaker/lite-addon-forwarder/internal/config"
+	"github.com/hobbyquaker/lite-addon-forwarder/internal/metrics"
 	"github.com/hobbyquaker/lite-addon-forwarder/internal/pipeline"
 	"github.com/hobbyquaker/lite-addon-forwarder/internal/record"
 	"github.com/hobbyquaker/lite-addon-forwarder/internal/selection"
@@ -35,6 +36,8 @@ type Options struct {
 	Store    *config.Store
 	Pipeline *pipeline.Manager
 	Source   *source.Source
+	// Metrics is the poller; nil when none runs (a test).
+	Metrics *metrics.Poller
 	// Wrap is the session check; nil: none (development only).
 	Wrap    func(http.Handler) http.Handler
 	Version string
@@ -168,21 +171,51 @@ func writeErr(w http.ResponseWriter, err error) {
 
 // Health is GET /api/v1/health.
 type Health struct {
-	Version    string       `json:"version"`
-	Started    time.Time    `json:"started"`
-	UptimeS    int64        `json:"uptime_s"`
-	Source     source.Stats `json:"source"`
-	Targets    int          `json:"targets"`
-	Selections int          `json:"selections"`
-	Types      []string     `json:"types"`
+	Version    string        `json:"version"`
+	Started    time.Time     `json:"started"`
+	UptimeS    int64         `json:"uptime_s"`
+	Source     source.Stats  `json:"source"`
+	Metrics    metrics.Stats `json:"metrics"`
+	Targets    int           `json:"targets"`
+	Selections int           `json:"selections"`
+	Types      []string      `json:"types"`
 }
 
 func (o *Options) health(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, Health{Version: o.Version, Started: o.Started, UptimeS: int64(time.Since(o.Started).Seconds()), Source: o.Source.Stats(), Targets: len(o.Store.Targets()), Selections: len(o.Store.Selections()), Types: config.Types})
+	writeJSON(w, 200, Health{Version: o.Version, Started: o.Started, UptimeS: int64(time.Since(o.Started).Seconds()), Source: o.Source.Stats(), Metrics: o.metricsStats(), Targets: len(o.Store.Targets()), Selections: len(o.Store.Selections()), Types: config.Types})
 }
 
+func (o *Options) metricsStats() metrics.Stats {
+	if o.Metrics == nil {
+		return metrics.Stats{Groups: []string{}, Errors: map[string]string{}}
+	}
+	return o.Metrics.Stats()
+}
+
+// InventoryView is GET /api/v1/inventory: the devices and the metric groups and log streams
+// a selection can name.
+type InventoryView struct {
+	source.Inventory
+	MetricGroups []metrics.GroupInfo `json:"metric_groups"`
+	LogStreams   []StreamInfo        `json:"log_streams"`
+}
+
+// StreamInfo documents one log stream.
+type StreamInfo struct {
+	Name  string            `json:"name"`
+	Title map[string]string `json:"title"`
+	Doc   map[string]string `json:"doc"`
+}
+
+// LogStreams lists the log streams this version has (none before 0.3.0).
+var LogStreams = []StreamInfo{}
+
 func (o *Options) inventory(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, o.Source.Inventory())
+	writeJSON(w, 200, InventoryView{Inventory: o.Source.Inventory(), MetricGroups: metrics.Groups, LogStreams: LogStreams})
+}
+
+func (o *Options) statusMessage() map[string]any {
+	return map[string]any{"source": o.Source.Stats(), "metrics": o.metricsStats(), "targets": o.Pipeline.Status()}
 }
 
 // RecentRecord is a record with the targets that would take it.
@@ -496,7 +529,7 @@ func (o *Options) previewTarget(w http.ResponseWriter, r *http.Request) {
 }
 
 func (o *Options) status(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, map[string]any{"source": o.Source.Stats(), "targets": o.Pipeline.Status()})
+	writeJSON(w, 200, o.statusMessage())
 }
 
 // stream is GET /api/v1/stream: the status as SSE, on every change and at least every 5 s.
@@ -511,7 +544,7 @@ func (o *Options) stream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(200)
 	send := func() {
-		b, _ := json.Marshal(map[string]any{"source": o.Source.Stats(), "targets": o.Pipeline.Status()})
+		b, _ := json.Marshal(o.statusMessage())
 		fmt.Fprintf(w, "event: status\ndata: %s\n\n", b)
 		fl.Flush()
 	}

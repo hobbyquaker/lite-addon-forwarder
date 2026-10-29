@@ -4,7 +4,7 @@ package config
 // a measurement per datapoint key, the address as tags, the names as tags too (readable; a
 // rename starts a new series), the value as a typed field. "one_measurement" puts everything
 // into one measurement with the key as a tag; "per_device" makes a measurement per device with
-// a field per key.
+// a field per key. A tag named "*" stands for every label of a metric (or field of a log line).
 var InfluxPresets = map[string]Influx{
 	"clean": {
 		Event: InfluxTemplates{
@@ -29,7 +29,7 @@ var InfluxPresets = map[string]Influx{
 		},
 		Metric: InfluxTemplates{
 			Measurement: "{{ group }}",
-			Tags:        []NamedTemplate{{"host", "{{ labels.host }}"}, {"name", "{{ labels.name }}"}, {"interface", "{{ labels.interface }}"}, {"unit", "{{ labels.unit }}"}, {"type", "{{ labels.type }}"}},
+			Tags:        []NamedTemplate{{"*", ""}, {"unit", "{{ unit }}"}},
 			Fields:      []FieldTemplate{{"{{ name }}", "{{ value_num }}", "float"}},
 		},
 		Log: InfluxTemplates{
@@ -60,7 +60,7 @@ var InfluxPresets = map[string]Influx{
 		},
 		Metric: InfluxTemplates{
 			Measurement: "system",
-			Tags:        []NamedTemplate{{"group", "{{ group }}"}, {"name", "{{ labels.name }}"}, {"interface", "{{ labels.interface }}"}, {"type", "{{ labels.type }}"}},
+			Tags:        []NamedTemplate{{"group", "{{ group }}"}, {"*", ""}},
 			Fields:      []FieldTemplate{{"{{ name }}", "{{ value_num }}", "float"}},
 		},
 		Log: InfluxTemplates{
@@ -85,7 +85,7 @@ var InfluxPresets = map[string]Influx{
 		},
 		Metric: InfluxTemplates{
 			Measurement: "{{ group }}",
-			Tags:        []NamedTemplate{{"name", "{{ labels.name }}"}, {"interface", "{{ labels.interface }}"}, {"type", "{{ labels.type }}"}},
+			Tags:        []NamedTemplate{{"*", ""}},
 			Fields:      []FieldTemplate{{"{{ name }}", "{{ value_num }}", "float"}},
 		},
 		Log: InfluxTemplates{

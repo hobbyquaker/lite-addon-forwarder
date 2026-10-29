@@ -33,10 +33,15 @@ type Settings struct {
 	Recent int `json:"recent"`
 	// Language of the room and function names in the records (de, en).
 	Lang string `json:"lang"`
+	// MetricsIntervalS is how often the statistics and the host's figures are polled, in
+	// seconds (10 … 3600); the groups a target's selection wants are polled, no others.
+	MetricsIntervalS int `json:"metrics_interval_s"`
 }
 
 // DefaultSettings are the defaults of a fresh installation.
-func DefaultSettings() Settings { return Settings{Snapshot: true, Recent: 500, Lang: "de"} }
+func DefaultSettings() Settings {
+	return Settings{Snapshot: true, Recent: 500, Lang: "de", MetricsIntervalS: 60}
+}
 
 // Batch is a target's batching.
 type Batch struct {
@@ -387,6 +392,9 @@ func Open(dir string) (*Store, error) {
 	if s.file.Settings.Lang == "" {
 		s.file.Settings.Lang = "de"
 	}
+	if s.file.Settings.MetricsIntervalS < 10 || s.file.Settings.MetricsIntervalS > 3600 {
+		s.file.Settings.MetricsIntervalS = DefaultSettings().MetricsIntervalS
+	}
 	for i := range s.file.Targets {
 		s.decorate(&s.file.Targets[i])
 	}
@@ -416,6 +424,9 @@ func (s *Store) SetSettings(st Settings) error {
 	}
 	if st.Lang != "de" && st.Lang != "en" {
 		st.Lang = "de"
+	}
+	if st.MetricsIntervalS < 10 || st.MetricsIntervalS > 3600 {
+		st.MetricsIntervalS = DefaultSettings().MetricsIntervalS
 	}
 	s.mu.Lock()
 	s.file.Settings = st
