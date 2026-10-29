@@ -2,7 +2,7 @@
 // tests and for development: FORWARDER_DEV_PORT=8295 go test -count=1 -timeout 0 -run TestServe
 // ./internal/devserver serves the built app (ui/dist) at /addons/forwarder/ on that port, a
 // webhook receiver at /dev/hook (its bodies at /dev/hook/bodies) and an event pusher at
-// /dev/push?address=000A:1&key=ACTUAL_TEMPERATURE&value=21.5, until it is killed.
+// /dev/push?address=000A:1&key=ACTUAL_TEMPERATURE&value=21.5, and /dev/reset, until it is killed.
 package devserver
 
 import (
@@ -143,6 +143,19 @@ func TestServe(t *testing.T) {
 			iface = "HmIP-RF"
 		}
 		lite.PushEvent(iface, q.Get("address"), q.Get("key"), v)
+		w.WriteHeader(204)
+	})
+	// /dev/reset empties the configuration and the receiver, so every Playwright project starts alike
+	mux.HandleFunc("/dev/reset", func(w http.ResponseWriter, r *http.Request) {
+		for _, t := range store.Targets() {
+			_ = store.DeleteTarget(t.ID)
+		}
+		for _, s := range store.Selections() {
+			_ = store.DeleteSelection(s.ID)
+		}
+		hk.mu.Lock()
+		hk.bodies = nil
+		hk.mu.Unlock()
 		w.WriteHeader(204)
 	})
 	mux.HandleFunc("/dev/rename", func(w http.ResponseWriter, r *http.Request) {

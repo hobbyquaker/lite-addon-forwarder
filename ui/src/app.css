@@ -373,6 +373,10 @@ body,
     line-height: 1.7;
 }
 
+.fw-suggest button .fw-faint {
+    margin-left: 5px;
+}
+
 .fw-suggest button:hover {
     background: var(--hmm-control-bg-hover);
 }

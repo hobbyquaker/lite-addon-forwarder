@@ -10,6 +10,10 @@ async function hookBodies(page: Page): Promise<unknown[][]> {
 
 test.describe.configure({mode: 'serial'});
 
+test.beforeAll(async ({request}) => {
+    await request.get(`${DEV}/dev/reset`);
+});
+
 test('the page loads with the system connected', async ({page}) => {
     await page.goto('./');
     await expect(page.getByRole('heading', {name: 'Forwarder'})).toBeVisible();
@@ -143,4 +147,9 @@ test('an InfluxDB target with the clean preset previews line protocol; the secre
     await expect(confirm).toBeVisible();
     await confirm.getByRole('button', {name: /Delete|Löschen/}).click();
     await expect(card).toBeHidden();
+    await page.screenshot({path: `test-results/targets-${test.info().project.name}.png`, fullPage: true});
+    await page.getByRole('tab', {name: /Selections|Auswahlen/}).click();
+    await page.locator('.fw-card').first().getByRole('button', {name: /Edit|Bearbeiten/}).click();
+    await expect(page.getByTestId('selection-editor')).toBeVisible();
+    await page.screenshot({path: `test-results/selection-${test.info().project.name}.png`});
 });

@@ -50,6 +50,16 @@
         return t('state.' + s.state);
     }
 
+    /** The last error is shown while it is newer than the last success: a recovered target is clean. */
+    function currentError(s: Status | undefined): string {
+        if (!s) return '';
+        const err = s.last_error || s.last_render_error;
+        if (!err) return '';
+        if (s.state === 'retrying' || s.state === 'error') return err;
+        if (!s.last_success || s.last_success.startsWith('0001')) return err;
+        return Date.parse(s.last_error_at) > Date.parse(s.last_success) ? err : '';
+    }
+
     function lag(s: Status): string {
         if (!s.queued) return '–';
         return formatDuration(s.lag_ms);
@@ -167,9 +177,7 @@
                     <b>{s?.last_success && !s.last_success.startsWith('0001') ? formatDateTime(Date.parse(s.last_success)) : '–'}</b><span>{t('last success')}</span>
                 </div>
             </div>
-            <div class="fw-card-error" title={s?.last_error || s?.last_render_error || ''}>
-                {#if s?.last_error}{s.last_error}{:else if s?.last_render_error}{s.last_render_error}{/if}
-            </div>
+            <div class="fw-card-error" title={currentError(s)}>{currentError(s)}</div>
             {#if testResult[tv.id]}
                 <div class="fw-test-result {testResult[tv.id]?.ok ? '' : 'fw-error'}">{testResult[tv.id]?.message}</div>
             {/if}
