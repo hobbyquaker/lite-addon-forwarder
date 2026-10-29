@@ -1,7 +1,7 @@
-// forwarder is the lite-addon-forwarder daemon: it reads the system's datapoint events (and,
-// in later versions, its statistics, system metrics and logs), labels them with names, rooms
-// and functions, and forwards what the configured selections match to the configured targets
-// - InfluxDB, HTTP webhooks and more. It serves its configuration page and API on the loopback,
+// forwarder is the lite-addon-forwarder daemon: it reads the system's datapoint events, its
+// statistics and the host's figures (and, in a later version, its logs), labels the events with
+// names, rooms and functions, and forwards what the configured selections match to the
+// configured targets - InfluxDB, HTTP webhooks, Elasticsearch, Prometheus and more. It serves its configuration page and API on the loopback,
 // behind lighttpd's proxy of /addons/forwarder/. openccu-lite only.
 package main
 

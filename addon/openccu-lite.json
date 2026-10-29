@@ -3,10 +3,10 @@
   "id": "forwarder",
   "name": "Forwarder",
   "description": {
-    "de": "Leitet die Ereignisse der Homematic-Geräte (später auch Statistiken, Systemmetriken und Protokolle) an externe Speicher weiter: InfluxDB und HTTP-Webhooks, mit beliebig vielen Zielen, wiederverwendbaren Auswahlen und konfigurierbaren Schemata per Jinja-Templates.",
-    "en": "Forwards the Homematic devices' events (later statistics, system metrics and logs too) to external stores: InfluxDB and HTTP webhooks, with any number of targets, reusable selections and configurable schemas through Jinja templates."
+    "de": "Leitet die Ereignisse der Homematic-Geräte, die Statistiken des Systems und die Kennzahlen des Rechners (später auch Protokolle) an externe Speicher weiter: InfluxDB, HTTP-Webhooks, Elasticsearch/OpenSearch und Prometheus, mit beliebig vielen Zielen, wiederverwendbaren Auswahlen und konfigurierbaren Schemata per Jinja-Templates.",
+    "en": "Forwards the Homematic devices' events, the system's statistics and the machine's figures (later logs too) to external stores: InfluxDB, HTTP webhooks, Elasticsearch/OpenSearch and Prometheus, with any number of targets, reusable selections and configurable schemas through Jinja templates."
   },
-  "version": "0.1.0",
+  "version": "0.2.0",
   "homepage": "https://github.com/hobbyquaker/lite-addon-forwarder",
   "licence": "MIT",
   "changelog": "https://github.com/hobbyquaker/lite-addon-forwarder/blob/main/CHANGELOG.md",
@@ -28,8 +28,8 @@
     "needs": [],
     "api_scopes": ["rpc:read", "meta:read", "system:read"],
     "note": {
-      "de": "Liest die Geräteliste, die Gerätebeschreibungen, den Ereignisstrom und die aktuellen Werte der Funkschnittstellen sowie die Namen, Räume und Gewerke aus den Metadaten. Sendet sie ausschließlich an die Ziele, die Sie eingerichtet haben (InfluxDB, Webhooks); ohne Ziel kontaktiert es nichts außerhalb des Systems. Passwörter und Token liegen in einer Datei, die nur das Addon lesen kann.",
-      "en": "Reads the device lists, the device descriptions, the event stream and the current values of the radio interfaces, and the names, rooms and functions from the metadata. Sends them only to the targets you configured (InfluxDB, webhooks); without a target it contacts nothing outside the system. Passwords and tokens are kept in a file only the addon can read."
+      "de": "Liest die Geräteliste, die Gerätebeschreibungen, den Ereignisstrom und die aktuellen Werte der Funkschnittstellen, die Namen, Räume und Gewerke aus den Metadaten und die Statistiken des Systems (Servicemeldungen, Funk, Dienste; system:read). Sendet sie ausschließlich an die Ziele, die Sie eingerichtet haben (InfluxDB, Webhooks, Elasticsearch, Prometheus); ohne Ziel kontaktiert es nichts außerhalb des Systems. Passwörter und Token liegen in einer Datei, die nur das Addon lesen kann.",
+      "en": "Reads the device lists, the device descriptions, the event stream and the current values of the radio interfaces, the names, rooms and functions from the metadata, and the system's statistics (service messages, radio, services; system:read). Sends them only to the targets you configured (InfluxDB, webhooks, Elasticsearch, Prometheus); without a target it contacts nothing outside the system. Passwords and tokens are kept in a file only the addon can read."
     }
   }
 }
