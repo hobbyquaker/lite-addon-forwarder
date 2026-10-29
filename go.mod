@@ -3,6 +3,7 @@ module github.com/hobbyquaker/lite-addon-forwarder
 go 1.27.1
 
 require (
+	github.com/golang/snappy v1.0.0
 	github.com/hobbyquaker/ccu-addon-kit/go v0.0.0-20261028161954-88c0703cc397
 	github.com/nikolalohinski/gonja/v2 v2.9.1
 )

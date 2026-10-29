@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"path"
 	"strconv"
@@ -128,7 +129,87 @@ func New(o Options) http.Handler {
 	if o.Wrap != nil {
 		h = o.Wrap(h)
 	}
-	return guard(h)
+	// the Prometheus scrape endpoints sit outside the session check: a target's own token
+	// admits a scraper (Authorization: Bearer or ?token=), nothing else does
+	scrape := http.NewServeMux()
+	scrape.HandleFunc("GET /metrics/{id}", o.scrape)
+	Routes = append(Routes, "GET /metrics/{id}")
+	outer := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, o.BasePath+"/metrics/") {
+			http.StripPrefix(o.BasePath, scrape).ServeHTTP(w, r)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
+	return guard(outer)
+}
+
+// scrape is GET /metrics/{id}: the exposition of a Prometheus target in scrape mode, plus the
+// forwarder's own figures, for a scraper that carries the target's token.
+func (o *Options) scrape(w http.ResponseWriter, r *http.Request) {
+	e, ok := o.Pipeline.Exposer(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if tok == r.Header.Get("Authorization") {
+		tok = r.URL.Query().Get("token")
+	}
+	if !e.Authorize(tok) {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="forwarder"`)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	e.Expose(w, time.Now())
+	o.ownMetrics(w)
+}
+
+// ownMetrics writes the forwarder's own figures: the source and every target's counters.
+func (o *Options) ownMetrics(w io.Writer) {
+	src := o.Source.Stats()
+	fmt.Fprintf(w, "# TYPE forwarder_source_connected gauge\nforwarder_source_connected %d\n", b2i(src.Connected))
+	fmt.Fprintf(w, "# TYPE forwarder_source_events_total counter\nforwarder_source_events_total %d\n", src.Events)
+	fmt.Fprintf(w, "# TYPE forwarder_source_datapoints gauge\nforwarder_source_datapoints %d\n", src.Datapoints)
+	ms := o.metricsStats()
+	fmt.Fprintf(w, "# TYPE forwarder_metrics_polls_total counter\nforwarder_metrics_polls_total %d\n", ms.Polls)
+	fmt.Fprintf(w, "# TYPE forwarder_metrics_poll_errors gauge\nforwarder_metrics_poll_errors %d\n", len(ms.Errors))
+	statuses := o.Pipeline.Status()
+	type col struct{ name, typ string }
+	cols := []col{{"sent_total", "counter"}, {"dropped_total", "counter"}, {"retried_total", "counter"}, {"batches_total", "counter"}, {"queued", "gauge"}, {"spilled", "gauge"}, {"lag_seconds", "gauge"}, {"connected", "gauge"}}
+	for _, c := range cols {
+		fmt.Fprintf(w, "# TYPE forwarder_target_%s %s\n", c.name, c.typ)
+		for _, s := range statuses {
+			var v string
+			switch c.name {
+			case "sent_total":
+				v = strconv.FormatInt(s.Sent, 10)
+			case "dropped_total":
+				v = strconv.FormatInt(s.Dropped, 10)
+			case "retried_total":
+				v = strconv.FormatInt(s.Retried, 10)
+			case "batches_total":
+				v = strconv.FormatInt(s.Batches, 10)
+			case "queued":
+				v = strconv.Itoa(s.Queued)
+			case "spilled":
+				v = strconv.Itoa(s.Spilled)
+			case "lag_seconds":
+				v = strconv.FormatFloat(float64(s.LagMS)/1000, 'g', -1, 64)
+			case "connected":
+				v = strconv.Itoa(b2i(s.Connected))
+			}
+			fmt.Fprintf(w, "forwarder_target_%s{target=%q,type=%q,state=%q} %s\n", c.name, s.Name, s.Type, s.State, v)
+		}
+	}
+}
+
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func guard(next http.Handler) http.Handler {
@@ -629,7 +710,11 @@ func (o *Options) templateHelp(w http.ResponseWriter, r *http.Request) {
 }
 
 func (o *Options) presets(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, map[string]any{"influx": config.InfluxPresets, "influx_order": config.PresetNames, "webhook": config.WebhookPresets, "defaults": map[string]config.Target{"influx": config.DefaultTarget("influx"), "webhook": config.DefaultTarget("webhook")}})
+	defaults := map[string]config.Target{}
+	for _, typ := range config.Types {
+		defaults[typ] = config.DefaultTarget(typ)
+	}
+	writeJSON(w, 200, map[string]any{"influx": config.InfluxPresets, "influx_order": config.PresetNames, "webhook": config.WebhookPresets, "elastic": config.ElasticPresets, "elastic_order": config.ElasticPresetNames, "prometheus": config.PrometheusPresets, "prometheus_order": config.PrometheusPresetNames, "defaults": defaults})
 }
 
 func (o *Options) settings(w http.ResponseWriter, r *http.Request) {

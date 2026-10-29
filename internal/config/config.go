@@ -130,6 +130,57 @@ type Webhook struct {
 	Gzip bool   `json:"gzip"`
 }
 
+// Elastic is an Elasticsearch or OpenSearch target (the _bulk API).
+type Elastic struct {
+	URL string `json:"url"`
+	// Index is the template of the index (or data stream) name per record; a batch holds one
+	// action line per record, so the names may differ within a batch.
+	Index string `json:"index"`
+	// Document is the template of one record's document; it must render a JSON object. The
+	// default is the whole record.
+	Document string `json:"document"`
+	// Timestamp adds "@timestamp" (the record's ts) to the document, which data streams need.
+	Timestamp bool `json:"timestamp"`
+	// Action is index (an index) or create (a data stream).
+	Action string `json:"action"`
+	// Pipeline is an ingest pipeline name, optional.
+	Pipeline string `json:"pipeline"`
+	// Auth is none, basic (User and the secret password), apikey (the secret api_key) or bearer
+	// (the secret token).
+	Auth string `json:"auth"`
+	User string `json:"user"`
+	Gzip bool   `json:"gzip"`
+	// InstallTemplate puts an index template for TemplatePattern (ts and @timestamp as date,
+	// value as keyword, value_num as double, value_bool as boolean, the rest as keywords) on the
+	// first successful connection, so a mixed-type value cannot break the mapping.
+	InstallTemplate bool   `json:"install_template"`
+	TemplatePattern string `json:"template_pattern"`
+	// Preset names the document preset the template started from; informational.
+	Preset string `json:"preset"`
+}
+
+// Prometheus is a Prometheus target: a scrape endpoint the daemon serves (mode scrape) or
+// remote_write pushes (mode remote_write).
+type Prometheus struct {
+	// Mode is scrape or remote_write.
+	Mode string `json:"mode"`
+	// URL is the remote_write endpoint (mode remote_write).
+	URL string `json:"url"`
+	// Auth is none, basic (User and the secret password) or bearer (the secret token), for
+	// remote_write. The scrape endpoint is protected by the secret scrape_token.
+	Auth string `json:"auth"`
+	User string `json:"user"`
+	// Name is the template of the metric name; Labels the label templates (an empty value leaves
+	// the label out). A label named * stands for every label of a metric record.
+	Name   string          `json:"name"`
+	Labels []NamedTemplate `json:"labels"`
+	// StaleS drops a series from the scrape endpoint that saw no record for this many seconds;
+	// 0 keeps every series.
+	StaleS int `json:"stale_s"`
+	// Preset names the preset the templates started from; informational.
+	Preset string `json:"preset"`
+}
+
 // Target is one target.
 type Target struct {
 	ID        string `json:"id"`
@@ -144,8 +195,10 @@ type Target struct {
 	// Timeout of one send in seconds.
 	TimeoutS int `json:"timeout_s"`
 
-	Influx  *Influx  `json:"influx,omitempty"`
-	Webhook *Webhook `json:"webhook,omitempty"`
+	Influx     *Influx     `json:"influx,omitempty"`
+	Webhook    *Webhook    `json:"webhook,omitempty"`
+	Elastic    *Elastic    `json:"elastic,omitempty"`
+	Prometheus *Prometheus `json:"prometheus,omitempty"`
 
 	// SecretsSet says which secrets are stored (password, token); read-only in the API.
 	SecretsSet map[string]bool `json:"secrets"`
@@ -159,12 +212,14 @@ type Target struct {
 }
 
 // Types lists the target types this build has.
-var Types = []string{"influx", "webhook"}
+var Types = []string{"influx", "webhook", "elastic", "prometheus"}
 
 // SecretNames are the secrets a type may hold.
 var SecretNames = map[string][]string{
-	"influx":  {"password", "token"},
-	"webhook": {"password", "token"},
+	"influx":     {"password", "token"},
+	"webhook":    {"password", "token"},
+	"elastic":    {"password", "token", "api_key"},
+	"prometheus": {"password", "token", "scrape_token"},
 }
 
 // DefaultTarget is a new target's defaults.
@@ -175,8 +230,30 @@ func DefaultTarget(typ string) Target {
 		t.Influx = &Influx{Version: "2", Gzip: true, Preset: "clean", Event: InfluxPresets["clean"].Event, Metric: InfluxPresets["clean"].Metric, Log: InfluxPresets["clean"].Log}
 	case "webhook":
 		t.Webhook = &Webhook{Method: "POST", Format: "json", Body: "{{ record | tojson }}", Headers: map[string]string{}, Auth: "none"}
+	case "elastic":
+		e := ElasticPresets["record"]
+		t.Elastic = &e
+	case "prometheus":
+		p := PrometheusPresets["clean"]
+		t.Prometheus = &p
 	}
 	return t
+}
+
+// clearOthers drops the settings of the other types.
+func (t *Target) clearOthers() {
+	if t.Type != "influx" {
+		t.Influx = nil
+	}
+	if t.Type != "webhook" {
+		t.Webhook = nil
+	}
+	if t.Type != "elastic" {
+		t.Elastic = nil
+	}
+	if t.Type != "prometheus" {
+		t.Prometheus = nil
+	}
 }
 
 // Validate checks a target and fills defaults where a field is empty or out of range.
@@ -213,12 +290,12 @@ func (t *Target) Validate() error {
 	if t.TimeoutS <= 0 || t.TimeoutS > 300 {
 		t.TimeoutS = d.TimeoutS
 	}
+	t.clearOthers()
 	switch t.Type {
 	case "influx":
 		if t.Influx == nil {
 			return errors.New("influx settings missing")
 		}
-		t.Webhook = nil
 		i := t.Influx
 		if i.Version != "1" && i.Version != "2" {
 			return errors.New("influx version must be 1 or 2")
@@ -259,7 +336,6 @@ func (t *Target) Validate() error {
 		if t.Webhook == nil {
 			return errors.New("webhook settings missing")
 		}
-		t.Influx = nil
 		w := t.Webhook
 		if strings.TrimSpace(w.URL) == "" {
 			return errors.New("the URL is missing")
@@ -300,6 +376,70 @@ func (t *Target) Validate() error {
 			if strings.ContainsAny(k, " :\r\n") || strings.ContainsAny(w.Headers[k], "\r\n") {
 				return fmt.Errorf("bad header %q", k)
 			}
+		}
+	case "elastic":
+		if t.Elastic == nil {
+			return errors.New("elastic settings missing")
+		}
+		e := t.Elastic
+		if err := checkURL(e.URL); err != nil {
+			return err
+		}
+		if strings.TrimSpace(e.Index) == "" {
+			return errors.New("the index template is empty")
+		}
+		if e.Document == "" {
+			e.Document = "{{ record | tojson }}"
+		}
+		switch e.Action {
+		case "":
+			e.Action = "index"
+		case "index", "create":
+		default:
+			return fmt.Errorf("action %q is not index or create", e.Action)
+		}
+		switch e.Auth {
+		case "":
+			e.Auth = "none"
+		case "none", "basic", "apikey", "bearer":
+		default:
+			return fmt.Errorf("auth %q is not none, basic, apikey or bearer", e.Auth)
+		}
+		if e.TemplatePattern == "" {
+			e.TemplatePattern = "homematic-*"
+		}
+	case "prometheus":
+		if t.Prometheus == nil {
+			return errors.New("prometheus settings missing")
+		}
+		p := t.Prometheus
+		switch p.Mode {
+		case "":
+			p.Mode = "scrape"
+		case "scrape", "remote_write":
+		default:
+			return fmt.Errorf("mode %q is not scrape or remote_write", p.Mode)
+		}
+		if p.Mode == "remote_write" {
+			if err := checkURL(p.URL); err != nil {
+				return err
+			}
+		}
+		switch p.Auth {
+		case "":
+			p.Auth = "none"
+		case "none", "basic", "bearer":
+		default:
+			return fmt.Errorf("auth %q is not none, basic or bearer", p.Auth)
+		}
+		if strings.TrimSpace(p.Name) == "" {
+			return errors.New("the metric name template is empty")
+		}
+		if p.Labels == nil {
+			p.Labels = []NamedTemplate{}
+		}
+		if p.StaleS < 0 || p.StaleS > 86400*7 {
+			p.StaleS = 0
 		}
 	}
 	for name := range t.SetSecrets {

@@ -104,3 +104,41 @@ var WebhookPresets = map[string]Webhook{
 	"record":  {Method: "POST", Format: "json", Body: "{{ record | tojson }}", Auth: "none", Headers: map[string]string{}},
 	"compact": {Method: "POST", Format: "ndjson", Body: `{"ts": {{ ts_ms }}, "address": "{{ interface }}/{{ address }}", "key": "{{ key }}", "value": {{ value | tojson }}, "name": {{ channel_name | tojson }}}`, Auth: "none", Headers: map[string]string{}},
 }
+
+// ElasticPresets are the document templates an Elasticsearch target starts from: "record" is
+// the whole record (the default), "flat" a small document with the value fields only.
+var ElasticPresets = map[string]Elastic{
+	"record": {Index: "homematic-{{ kind }}-{{ ts | date('2006.01.02') }}", Document: "{{ record | tojson }}", Timestamp: true, Action: "index", Auth: "none", Gzip: true, InstallTemplate: true, TemplatePattern: "homematic-*", Preset: "record"},
+	"flat":   {Index: "homematic-{{ ts | date('2006.01') }}", Document: `{"kind": "{{ kind }}", "address": "{{ interface }}/{{ address }}", "key": {{ key | tojson }}, "name": {{ channel_name | tojson }}, "device_name": {{ device_name | tojson }}, "rooms": {{ rooms | tojson }}, "value_num": {{ value_num | tojson }}, "value_text": {{ value_text | tojson }}, "group": "{{ group }}", "metric": "{{ name }}", "labels": {{ labels | tojson }}}`, Timestamp: true, Action: "index", Auth: "none", Gzip: true, InstallTemplate: true, TemplatePattern: "homematic-*", Preset: "flat"},
+}
+
+// ElasticPresetNames lists the Elastic presets in the UI's order.
+var ElasticPresetNames = []string{"record", "flat"}
+
+// PrometheusPresets are the name and label templates a Prometheus target starts from: "clean"
+// names an event homematic_<key> with the address and the names as labels and a metric
+// <group>_<name> with its labels; "by_name" names an event by the channel name instead.
+var PrometheusPresets = map[string]Prometheus{
+	"clean": {Mode: "scrape", Auth: "none", Name: "{% if kind == 'event' %}homematic_{{ key | lower }}{% elif kind == 'metric' %}{{ group }}_{{ name }}{% endif %}", Labels: []NamedTemplate{
+		{"*", ""},
+		{"interface", "{{ interface }}"},
+		{"address", "{{ address }}"},
+		{"device_type", "{{ device_type }}"},
+		{"device_name", "{{ device_name }}"},
+		{"channel_name", "{{ channel_name }}"},
+		{"room", "{{ rooms | join(',') }}"},
+		{"function", "{{ functions | join(',') }}"},
+	}, Preset: "clean"},
+	"one_metric": {Mode: "scrape", Auth: "none", Name: "{% if kind == 'event' %}homematic_value{% elif kind == 'metric' %}{{ group }}_{{ name }}{% endif %}", Labels: []NamedTemplate{
+		{"*", ""},
+		{"interface", "{{ interface }}"},
+		{"address", "{{ address }}"},
+		{"key", "{{ key }}"},
+		{"device_name", "{{ device_name }}"},
+		{"channel_name", "{{ channel_name }}"},
+		{"room", "{{ rooms | join(',') }}"},
+	}, Preset: "one_metric"},
+}
+
+// PrometheusPresetNames lists the Prometheus presets in the UI's order.
+var PrometheusPresetNames = []string{"clean", "one_metric"}

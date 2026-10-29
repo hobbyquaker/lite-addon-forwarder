@@ -7,6 +7,7 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math/rand/v2"
 	"sort"
 	"strings"
@@ -31,12 +32,15 @@ type Status struct {
 	// before the first send is State "idle".
 	Connected bool `json:"connected"`
 	// State is idle (nothing sent yet), ok, retrying, error (config) or disabled.
-	State        string    `json:"state"`
-	LastSuccess  time.Time `json:"last_success"`
-	LastError    string    `json:"last_error"`
-	LastErrorAt  time.Time `json:"last_error_at"`
-	Queued       int       `json:"queued"`
-	InFlight     int       `json:"in_flight"`
+	State       string    `json:"state"`
+	LastSuccess time.Time `json:"last_success"`
+	LastError   string    `json:"last_error"`
+	LastErrorAt time.Time `json:"last_error_at"`
+	Queued      int       `json:"queued"`
+	InFlight    int       `json:"in_flight"`
+	// Spilled is how many records wait on disk, SpillBytes their size.
+	Spilled      int       `json:"spilled"`
+	SpillBytes   int64     `json:"spill_bytes"`
 	Sent         int64     `json:"sent"`
 	Batches      int64     `json:"batches"`
 	Dropped      int64     `json:"dropped"`
@@ -210,6 +214,18 @@ func (m *Manager) Status() []Status {
 	return out
 }
 
+// Exposer answers the target of an id when it serves its values itself (Prometheus scrape).
+func (m *Manager) Exposer(id string) (target.Exposer, bool) {
+	m.mu.Lock()
+	w := m.workers[id]
+	m.mu.Unlock()
+	if w == nil || w.tgt == nil || !w.cfg.Enabled {
+		return nil, false
+	}
+	e, ok := w.tgt.(target.Exposer)
+	return e, ok
+}
+
 // Clear drops a target's queue.
 func (m *Manager) Clear(id string) bool {
 	m.mu.Lock()
@@ -368,6 +384,17 @@ func (w *worker) deliver(ctx context.Context, p target.Payload) bool {
 		sctx, cancel := context.WithTimeout(ctx, time.Duration(w.cfg.TimeoutS)*time.Second+5*time.Second)
 		err := w.tgt.Send(sctx, p)
 		cancel()
+		var partial *target.PartialError
+		if errors.As(err, &partial) {
+			w.mu.Lock()
+			w.status.Dropped += int64(partial.Dropped)
+			w.status.LastError = err.Error()
+			w.status.LastErrorAt = w.m.Now()
+			w.mu.Unlock()
+			w.m.log("target %s: dropped %d records: %v", w.cfg.Name, partial.Dropped, err)
+			p.Records -= partial.Dropped
+			err = nil
+		}
 		if err == nil {
 			w.mu.Lock()
 			w.status.Sent += int64(p.Records)

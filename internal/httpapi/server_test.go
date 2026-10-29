@@ -358,3 +358,74 @@ func TestStream(t *testing.T) {
 		t.Errorf("stream: %q", buf[:n])
 	}
 }
+
+func TestScrapeEndpointAndMetricGroups(t *testing.T) {
+	w := newWorld(t)
+	// the inventory documents the metric groups for the selection editor
+	var inv InventoryView
+	w.call(t, "GET", "/api/v1/inventory", nil, &inv)
+	if len(inv.MetricGroups) < 10 || inv.MetricGroups[0].Name != "service_messages" || inv.MetricGroups[0].Title["de"] == "" || len(inv.MetricGroups[0].Metrics) == 0 {
+		t.Fatalf("metric groups: %+v", inv.MetricGroups)
+	}
+	var health Health
+	w.call(t, "GET", "/api/v1/health", nil, &health)
+	if len(health.Types) != 4 || health.Metrics.Groups == nil {
+		t.Errorf("health: %+v", health)
+	}
+	// a Prometheus scrape target over everything
+	var tv TargetView
+	body := map[string]any{"name": "prom", "type": "prometheus", "enabled": true, "batch": map[string]any{"size": 10, "interval_ms": 100}, "prometheus": map[string]any{"mode": "scrape", "name": config.PrometheusPresets["clean"].Name, "labels": config.PrometheusPresets["clean"].Labels}, "set_secrets": map[string]string{"scrape_token": "scr4pe"}}
+	if code := w.call(t, "POST", "/api/v1/targets", body, &tv); code != 201 {
+		t.Fatalf("create target: %d", code)
+	}
+	w.lite.PushEvent("HmIP-RF", "000A:1", "ACTUAL_TEMPERATURE", 23.5)
+	get := func(path, auth string) (int, string) {
+		req, _ := http.NewRequest("GET", w.app.URL+"/addons/forwarder"+path, nil)
+		if auth != "" {
+			req.Header.Set("Authorization", auth)
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		b, _ := io.ReadAll(res.Body)
+		return res.StatusCode, string(b)
+	}
+	waitFor(t, func() bool {
+		code, text := get("/metrics/"+tv.ID+"?token=scr4pe", "")
+		return code == 200 && strings.Contains(text, `homematic_actual_temperature{`) && strings.Contains(text, `} 23.5 `)
+	})
+	code, text := get("/metrics/"+tv.ID, "Bearer scr4pe")
+	if code != 200 || !strings.Contains(text, "# TYPE homematic_actual_temperature gauge") || !strings.Contains(text, `room="Bad"`) || !strings.Contains(text, "forwarder_target_sent_total{target=\"prom\"") || !strings.Contains(text, "forwarder_source_connected 1") {
+		t.Errorf("scrape: %d\n%s", code, text)
+	}
+	if code, _ := get("/metrics/"+tv.ID, ""); code != 401 {
+		t.Errorf("no token: %d", code)
+	}
+	if code, _ := get("/metrics/"+tv.ID, "Bearer wrong"); code != 401 {
+		t.Errorf("wrong token: %d", code)
+	}
+	if code, _ := get("/metrics/nosuch?token=scr4pe", ""); code != 404 {
+		t.Errorf("unknown target: %d", code)
+	}
+	// a disabled target no longer answers
+	w.call(t, "POST", "/api/v1/targets/"+tv.ID+"/enabled", map[string]any{"enabled": false}, nil)
+	if code, _ := get("/metrics/"+tv.ID+"?token=scr4pe", ""); code != 404 {
+		t.Errorf("disabled: %d", code)
+	}
+	// the presets carry the new types
+	var presets map[string]json.RawMessage
+	w.call(t, "GET", "/api/v1/presets", nil, &presets)
+	for _, k := range []string{"elastic", "elastic_order", "prometheus", "prometheus_order", "defaults"} {
+		if _, ok := presets[k]; !ok {
+			t.Errorf("presets lack %s", k)
+		}
+	}
+	// the metrics interval is a setting with bounds
+	var settings config.Settings
+	w.call(t, "PUT", "/api/v1/settings", map[string]any{"snapshot": true, "recent": 100, "lang": "en", "metrics_interval_s": 5}, &settings)
+	if settings.MetricsIntervalS != 60 {
+		t.Errorf("interval %d", settings.MetricsIntervalS)
+	}
+}

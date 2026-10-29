@@ -44,6 +44,24 @@ type Payload struct {
 	ContentType string
 }
 
+// PartialError says a store took the payload but refused Dropped of its records for their
+// content: the pipeline counts them as dropped and the rest as sent, and does not retry.
+type PartialError struct {
+	Dropped int
+	Err     error
+}
+
+func (e *PartialError) Error() string { return e.Err.Error() }
+func (e *PartialError) Unwrap() error { return e.Err }
+
+// Exposer is a target that serves its values itself (the Prometheus scrape endpoint).
+type Exposer interface {
+	// Authorize tells whether a scrape token is the target's.
+	Authorize(token string) bool
+	// Expose writes the exposition.
+	Expose(w io.Writer, now time.Time)
+}
+
 // PermanentError is an error retrying cannot mend.
 type PermanentError struct{ Err error }
 
@@ -68,6 +86,10 @@ func New(t config.Target) (Target, error) {
 		return NewInflux(t)
 	case "webhook":
 		return NewWebhook(t)
+	case "elastic":
+		return NewElastic(t)
+	case "prometheus":
+		return NewPrometheus(t)
 	}
 	return nil, fmt.Errorf("unknown target type %q", t.Type)
 }
@@ -111,6 +133,12 @@ func Client(t config.Target) (*http.Client, error) {
 // 429, 5xx, a network error - is retried, so a misconfiguration does not drop data while the
 // user fixes it. The answer's body is in the error, cut to a line.
 func Do(client *http.Client, req *http.Request, gz bool, body []byte) (status int, answer string, err error) {
+	status, raw, err := doRaw(client, req, gz, body)
+	return status, Line(string(raw)), err
+}
+
+// doRaw is Do with the answer's body whole (up to 1 MB), for a store whose answer is JSON.
+func doRaw(client *http.Client, req *http.Request, gz bool, body []byte) (status int, answer []byte, err error) {
 	if gz {
 		var buf bytes.Buffer
 		w := gzip.NewWriter(&buf)
@@ -124,17 +152,16 @@ func Do(client *http.Client, req *http.Request, gz bool, body []byte) (status in
 	req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
 	res, err := client.Do(req)
 	if err != nil {
-		return 0, "", fmt.Errorf("%s: %w", req.URL.Host, unwrapURL(err))
+		return 0, nil, fmt.Errorf("%s: %w", req.URL.Host, unwrapURL(err))
 	}
 	defer res.Body.Close()
-	b, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
-	answer = Line(string(b))
+	answer, _ = io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if res.StatusCode >= 200 && res.StatusCode < 300 {
 		return res.StatusCode, answer, nil
 	}
 	msg := fmt.Sprintf("%s: HTTP %d", req.URL.Host, res.StatusCode)
-	if answer != "" {
-		msg += ": " + answer
+	if line := Line(string(answer)); line != "" {
+		msg += ": " + line
 	}
 	switch res.StatusCode {
 	case 400, 413, 422:
