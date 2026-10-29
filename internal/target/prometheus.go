@@ -225,8 +225,8 @@ func WriteRequest(samples []*promSample) []byte {
 			var sm []byte
 			sm = append(sm, 0x09) // field 1, 64-bit
 			sm = binary.LittleEndian.AppendUint64(sm, math.Float64bits(s.Value))
-			sm = append(sm, 0x10) // field 2, varint
-			sm = binary.AppendVarint(sm, s.TS)
+			sm = append(sm, 0x10) // field 2, varint (an int64 is a plain varint, not zigzag)
+			sm = binary.AppendUvarint(sm, uint64(s.TS))
 			ts = appendBytes(ts, 2, sm)
 		}
 		out = appendBytes(out, 1, ts)

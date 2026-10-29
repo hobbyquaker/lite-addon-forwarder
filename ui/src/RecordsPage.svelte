@@ -69,7 +69,7 @@
             </tr>
         </thead>
         <tbody>
-            {#each records as r (r.ts + (r.address ?? '') + (r.key ?? '') + (r.name ?? ''))}
+            {#each records as r, i (i)}
                 <tr>
                     <td class="fw-mono">{r.ts.replace('T', ' ').slice(0, 23)}</td>
                     <td><span class="fw-pill kind">{t('kind.' + r.kind)}</span></td>

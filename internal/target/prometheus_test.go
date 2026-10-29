@@ -178,8 +178,8 @@ func decodeWriteRequest(t *testing.T, b []byte) []decodedSeries {
 						v = math.Float64frombits(binary.LittleEndian.Uint64(msg[:8]))
 						msg = msg[8:]
 					} else {
-						x, n := binary.Varint(msg)
-						tsv = x
+						x, n := binary.Uvarint(msg)
+						tsv = int64(x)
 						msg = msg[n:]
 					}
 				}

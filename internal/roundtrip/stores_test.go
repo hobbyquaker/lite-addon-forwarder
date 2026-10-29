@@ -126,7 +126,8 @@ func testElastic(t *testing.T, base, auth string) {
 	}
 	// the mapping made value a keyword, value_num a double, ts a date
 	code, b = get("/homematic-event-2026.10.30/_mapping")
-	if code != 200 || !strings.Contains(string(b), `"value":{"ignore_above":1024,"type":"keyword"}`) || !strings.Contains(string(b), `"value_num":{"type":"double"}`) || !strings.Contains(string(b), `"ts":{"type":"date"}`) {
+	mapping := string(b)
+	if code != 200 || !(strings.Contains(mapping, `"value":{"ignore_above":1024,"type":"keyword"}`) || strings.Contains(mapping, `"value":{"type":"keyword","ignore_above":1024}`)) || !strings.Contains(mapping, `"value_num":{"type":"double"}`) || !strings.Contains(mapping, `"ts":{"type":"date"}`) {
 		t.Errorf("mapping: %s", b)
 	}
 	// the bool and the text are there, the metric in its own index
