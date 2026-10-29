@@ -101,7 +101,9 @@ func run(addonDir, id string, port int, base, basePath, www, tokenFile string, n
 
 	wrap := func(h http.Handler) http.Handler { return h }
 	if !noSession {
-		c := addonkit.NewChecker(addonkit.SessionOptions{Base: base, Need: addonkit.LevelAdmin, OnRefused: func(r *http.Request, reason string) {
+		// the shell's admin session, or an API token of the scope addon:forwarder (a program that
+		// configures targets)
+		c := addonkit.NewChecker(addonkit.SessionOptions{Base: base, Need: addonkit.LevelAdmin, AddonID: id, OnRefused: func(r *http.Request, reason string) {
 			logf("refused %s %s: %s", r.Method, r.URL.Path, reason)
 		}})
 		wrap = c.Handler
