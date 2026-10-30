@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"strconv"
 	"strings"
@@ -75,6 +76,7 @@ func NewSQL(t config.Target) (*SQL, error) {
 		pc.DefaultQueryExecMode = pgx.QueryExecModeCacheStatement
 		s.db = stdlib.OpenDB(*pc)
 	case "mysql":
+		quietMySQL()
 		mc := mysql.NewConfig()
 		mc.User, mc.Passwd, mc.Net, mc.Addr, mc.DBName = c.User, t.Secrets["password"], "tcp", net.JoinHostPort(c.Host, strconv.Itoa(c.Port)), c.Database
 		mc.Timeout, mc.ReadTimeout, mc.WriteTimeout = 10*time.Second, timeout, timeout
@@ -96,6 +98,14 @@ func NewSQL(t config.Target) (*SQL, error) {
 	s.db.SetMaxIdleConns(1)
 	s.db.SetConnMaxIdleTime(5 * time.Minute)
 	return s, nil
+}
+
+var quietMySQLOnce sync.Once
+
+// quietMySQL silences the driver's own logger: it writes every lost connection to the log,
+// which the target's status already shows, and a server that is down would fill the journal.
+func quietMySQL() {
+	quietMySQLOnce.Do(func() { _ = mysql.SetLogger(log.New(io.Discard, "", 0)) })
 }
 
 // sqlTLS builds the TLS configuration of the connection: nil for mode disable, no check for

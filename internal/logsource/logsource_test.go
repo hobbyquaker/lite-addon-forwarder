@@ -65,6 +65,7 @@ func (f *fakeStream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.queries = append(f.queries, r.URL.RawQuery)
 	status := f.status
 	lines := append([]Line{}, f.lines...)
+	hold := f.hold
 	f.mu.Unlock()
 	if status != 0 {
 		http.Error(w, "no", status)
@@ -87,7 +88,7 @@ func (f *fakeStream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	fl.Flush()
 	select {
-	case <-f.hold:
+	case <-hold:
 	case <-r.Context().Done():
 	}
 }
@@ -152,9 +153,10 @@ func TestFollow(t *testing.T) {
 	// the stream drops: the follower resumes after the last cursor and gets only the new line
 	fs.mu.Lock()
 	fs.lines = append(fs.lines, Line{Timestamp: "2026-10-30T12:00:03Z", Tag: "rfd", Unit: "rfd.service", Severity: "err", Message: "late", Cursor: "c4"})
-	fs.mu.Unlock()
-	close(fs.hold)
+	hold := fs.hold
 	fs.hold = make(chan struct{})
+	fs.mu.Unlock()
+	close(hold)
 	wait(5)
 	mu.Lock()
 	if got[4].Message != "late" || len(got) != 5 {
