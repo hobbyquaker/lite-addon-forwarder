@@ -286,9 +286,11 @@ func (s *SQL) classify(err error) error {
 			class = class[:2]
 		}
 		switch class {
-		case "08", "53", "57", "58", "XX":
+		case "08", "53", "57", "58", "XX", "40":
 			return describe(err)
-		case "40":
+		case "28", "3D":
+			// a wrong password or an unknown database: a misconfiguration the user fixes, so the
+			// batch waits (as a 401 or 404 does at the HTTP targets)
 			return describe(err)
 		}
 		return Permanent("%v", describe(err))
@@ -297,6 +299,9 @@ func (s *SQL) classify(err error) error {
 	if errors.As(err, &my) {
 		switch my.Number {
 		case 1040, 1041, 1053, 1077, 1152, 1158, 1159, 1160, 1161, 1203, 1205, 1213, 1317, 1927, 3024, 3168, 3169, 4031:
+			return describe(err)
+		case 1044, 1045, 1049, 1698:
+			// access denied, unknown database: a misconfiguration the user fixes
 			return describe(err)
 		}
 		return Permanent("%v", describe(err))

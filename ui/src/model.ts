@@ -127,7 +127,65 @@ export interface Prometheus {
     preset: string;
 }
 
-export type TargetType = 'influx' | 'webhook' | 'elastic' | 'prometheus';
+export type SqlDialect = 'postgres' | 'mysql';
+
+export interface Sql {
+    dialect: SqlDialect;
+    host: string;
+    port: number;
+    database: string;
+    user: string;
+    tls_mode: 'disable' | 'require' | 'verify';
+    insert: string;
+    schema: string;
+    install_schema: boolean;
+    preset: string;
+}
+
+export type Transport = 'udp' | 'tcp' | 'tls';
+
+export interface Syslog {
+    host: string;
+    port: number;
+    transport: Transport;
+    framing: 'octet' | 'newline';
+    facility: number;
+    severity: string;
+    hostname: string;
+    app_name: string;
+    msg_id: string;
+    sd_id: string;
+    sd_params: NamedTemplate[];
+    message: string;
+    preset: string;
+}
+
+export interface Gelf {
+    host: string;
+    port: number;
+    transport: Transport;
+    compression: 'none' | 'gzip' | 'zlib';
+    short_message: string;
+    full_message: string;
+    level: string;
+    fields: NamedTemplate[];
+    all_fields: boolean;
+    preset: string;
+}
+
+export interface Loki {
+    url: string;
+    tenant_id: string;
+    auth: 'none' | 'basic' | 'bearer';
+    user: string;
+    gzip: boolean;
+    labels: NamedTemplate[];
+    line: string;
+    metadata: NamedTemplate[];
+    preset: string;
+}
+
+export type TargetType = 'influx' | 'webhook' | 'elastic' | 'prometheus' | 'sql' | 'syslog' | 'gelf' | 'loki';
 
 /** The target types in the UI's order with their display names. */
 export const TARGET_TYPES: {type: TargetType; label: string}[] = [
@@ -135,7 +193,14 @@ export const TARGET_TYPES: {type: TargetType; label: string}[] = [
     {type: 'webhook', label: 'HTTP webhook'},
     {type: 'elastic', label: 'Elasticsearch / OpenSearch'},
     {type: 'prometheus', label: 'Prometheus'},
+    {type: 'sql', label: 'PostgreSQL / MySQL'},
+    {type: 'syslog', label: 'Syslog'},
+    {type: 'gelf', label: 'GELF (Graylog)'},
+    {type: 'loki', label: 'Grafana Loki'},
 ];
+
+/** The syslog facilities by number. */
+export const FACILITIES = ['kern', 'user', 'mail', 'daemon', 'auth', 'syslog', 'lpr', 'news', 'uucp', 'cron', 'authpriv', 'ftp', 'ntp', 'audit', 'alert', 'clock', 'local0', 'local1', 'local2', 'local3', 'local4', 'local5', 'local6', 'local7'];
 
 export interface Target {
     id: string;
@@ -152,6 +217,10 @@ export interface Target {
     webhook?: Webhook;
     elastic?: Elastic;
     prometheus?: Prometheus;
+    sql?: Sql;
+    syslog?: Syslog;
+    gelf?: Gelf;
+    loki?: Loki;
     secrets: Record<string, boolean>;
     set_secrets?: Record<string, string>;
     clear_secrets?: string[];
@@ -215,9 +284,20 @@ export interface MetricsStats {
     interval_s: number;
 }
 
+export interface LogsStats {
+    following: boolean;
+    streams: string[];
+    lines: number;
+    audit: number;
+    reconnects: number;
+    last_line: string;
+    last_error: string;
+}
+
 export interface StatusMessage {
     source: SourceStats;
     metrics?: MetricsStats;
+    logs?: LogsStats;
     targets: Status[];
 }
 
@@ -227,6 +307,7 @@ export interface Health {
     uptime_s: number;
     source: SourceStats;
     metrics: MetricsStats;
+    logs?: LogsStats;
     targets: number;
     selections: number;
     types: TargetType[];
@@ -281,6 +362,7 @@ export interface StreamInfo {
 export interface Inventory {
     metric_groups?: MetricGroupInfo[];
     log_streams?: StreamInfo[];
+    log_units?: string[];
     interfaces: {name: string; protocol: string; running: boolean; devices: number}[];
     devices: DeviceInfo[];
     rooms: string[];
@@ -354,7 +436,26 @@ export interface Presets {
     elastic_order: string[];
     prometheus: Record<string, Prometheus>;
     prometheus_order: string[];
+    sql: Record<string, SqlPreset>;
+    sql_order: string[];
+    syslog: Record<string, Syslog>;
+    syslog_order: string[];
+    gelf: Record<string, Gelf>;
+    gelf_order: string[];
+    loki: Record<string, Loki>;
+    loki_order: string[];
     defaults: Record<TargetType, Target>;
+}
+
+export interface SqlStatements {
+    insert: string;
+    schema: string;
+}
+
+export interface SqlPreset {
+    postgres: SqlStatements;
+    mysql: SqlStatements;
+    timescale_only: boolean;
 }
 
 export interface Settings {
@@ -376,6 +477,13 @@ export function secretNames(t: Target): string[] {
         case 'prometheus':
             if (t.prometheus?.mode === 'remote_write') return t.prometheus.auth === 'basic' ? ['password'] : t.prometheus.auth === 'bearer' ? ['token'] : [];
             return [];
+        case 'sql':
+            return ['password'];
+        case 'loki':
+            return t.loki?.auth === 'basic' ? ['password'] : t.loki?.auth === 'bearer' ? ['token'] : [];
+        case 'syslog':
+        case 'gelf':
+            return [];
     }
     return [];
 }
@@ -391,6 +499,14 @@ export function describeTarget(t: Target): {kind: string; where: string} {
             return {kind: 'Elasticsearch', where: `${t.elastic?.url ?? ''} → ${t.elastic?.index ?? ''}`};
         case 'prometheus':
             return t.prometheus?.mode === 'remote_write' ? {kind: 'Prometheus remote_write', where: t.prometheus.url} : {kind: 'Prometheus scrape', where: t.id ? `metrics/${t.id}` : ''};
+        case 'sql':
+            return {kind: t.sql?.dialect === 'mysql' ? 'MySQL / MariaDB' : 'PostgreSQL', where: `${t.sql?.host ?? ''}:${t.sql?.port ?? ''}/${t.sql?.database ?? ''}`};
+        case 'syslog':
+            return {kind: `Syslog ${t.syslog?.transport.toUpperCase() ?? ''}`.trim(), where: `${t.syslog?.host ?? ''}:${t.syslog?.port ?? ''}`};
+        case 'gelf':
+            return {kind: `GELF ${t.gelf?.transport.toUpperCase() ?? ''}`.trim(), where: `${t.gelf?.host ?? ''}:${t.gelf?.port ?? ''}`};
+        case 'loki':
+            return {kind: 'Loki', where: t.loki?.url ?? ''};
     }
     return {kind: t.type, where: ''};
 }
@@ -405,6 +521,8 @@ export function formatBytes(n: number): string {
 export interface TemplateHelp {
     variables: {name: string; type: string; doc: Record<string, string>}[];
     filters: {name: string; doc: Record<string, string>}[];
+    /** The :name placeholders an SQL statement may use. */
+    placeholders?: string[];
 }
 
 /** The parts of a selection that are rules, with how many entries each has. */

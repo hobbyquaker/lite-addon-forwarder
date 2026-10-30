@@ -35,6 +35,7 @@
     const src = $derived(status?.source ?? health?.source);
     const met = $derived(status?.metrics ?? health?.metrics);
     const metErrors = $derived(Object.entries(met?.errors ?? {}));
+    const logs = $derived(status?.logs ?? health?.logs);
     const when = (s: string | undefined) => (s && !s.startsWith('0001') ? formatDateTime(Date.parse(s)) : '–');
 </script>
 
@@ -113,6 +114,24 @@
                 <dt class="fw-error">{g}</dt>
                 <dd class="fw-error">{e}</dd>
             {/each}
+        </dl>
+    </div>
+
+    <div class="fw-card fw-about">
+        <div class="fw-card-head"><h3>{t('Logs')}</h3><span class="fw-pill {logs?.last_error ? 'retrying' : logs?.following ? 'ok' : 'idle'}">{logs?.last_error ? t('state.error') : logs?.following ? t('following') : t('state.idle')}</span></div>
+        <dl>
+            <dt>{t('Streams')}</dt>
+            <dd class="fw-mono fw-small">{logs?.streams?.length ? logs.streams.join(', ') : t('none - no target wants logs')}</dd>
+            <dt>{t('Lines since start')}</dt>
+            <dd>{logs?.lines ?? 0} ({logs?.audit ?? 0} {t('audit')})</dd>
+            <dt>{t('Last line')}</dt>
+            <dd>{when(logs?.last_line)}</dd>
+            <dt>{t('Reconnects')}</dt>
+            <dd>{logs?.reconnects ?? 0}</dd>
+            {#if logs?.last_error}
+                <dt>{t('Last error')}</dt>
+                <dd class="fw-error">{logs.last_error}</dd>
+            {/if}
         </dl>
     </div>
 

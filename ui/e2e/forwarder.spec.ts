@@ -228,3 +228,174 @@ test('a selection of metric groups, a Prometheus scrape target and an Elasticsea
     await expect(ecard).toContainText(/homematic-/);
     await page.screenshot({path: `test-results/targets-0.2-${test.info().project.name}.png`, fullPage: true});
 });
+
+test('a selection of log streams; syslog, GELF and Loki targets receive the journal and the audit lines', async ({page}) => {
+    await page.goto('./');
+    // a selection of the two log streams, ticked in the editor's checklist
+    await page.getByRole('tab', {name: /Selections|Auswahlen/}).click();
+    await page.getByRole('button', {name: /Add selection|Auswahl hinzufügen/}).click();
+    const sdlg = page.getByTestId('selection-editor');
+    await sdlg.getByLabel('Name').fill('Protokolle');
+    await sdlg.getByRole('checkbox', {name: /^\s*(Homematic events|Homematic-Ereignisse)\s*$/}).uncheck();
+    await sdlg.getByRole('checkbox', {name: /^\s*(Logs|Protokolle)\s*$/}).check();
+    await expect(sdlg.getByText(/^Journal journal$/)).toBeVisible();
+    await sdlg.getByRole('checkbox', {name: /^Journal journal/}).check();
+    await sdlg.getByRole('checkbox', {name: /^Audit/}).check();
+    await sdlg.getByRole('button', {name: /Save|Speichern/}).click();
+    await expect(sdlg).toBeHidden();
+    await expect(page.locator('.fw-card', {hasText: 'Protokolle'})).toContainText(/journal/);
+
+    const syslogPort = await (await page.request.get(`${DEV}/dev/syslog/port`)).text();
+    const gelfPort = await (await page.request.get(`${DEV}/dev/gelf/port`)).text();
+
+    // a syslog target over UDP with the structured preset
+    await page.getByRole('tab', {name: /Targets|Ziele/}).click();
+    await page.getByRole('combobox', {name: /Target type|Zieltyp/}).selectOption('syslog');
+    await page.getByRole('button', {name: /Add target|Ziel hinzufügen/}).click();
+    const dlg = page.getByTestId('target-editor');
+    await dlg.getByLabel('Name', {exact: true}).fill('Syslog');
+    await dlg.getByLabel(/^Selection$|^Auswahl$/).selectOption({label: 'Protokolle (0)'});
+    await dlg.getByLabel(/^Host$/).fill('127.0.0.1');
+    await dlg.getByLabel(/^Port$/).fill(syslogPort);
+    await dlg.getByRole('tab', {name: /^Message$|^Nachricht$/}).click();
+    await expect(dlg.getByLabel(/^Message$|^Nachricht$/)).toHaveValue(/kind == 'event'/);
+    await expect(dlg.locator('.fw-tpl-out').first()).toContainText(/rfd|api: change|hmipserver|addon installed/);
+    await dlg.getByRole('button', {name: /Preview|Vorschau/}).click();
+    await expect(dlg.locator('.fw-preview')).toContainText(/<13[0-9]>1 20\d\d-.* homematic - log \[homematic@32473 /);
+    await dlg.getByRole('button', {name: /^Test|^Testen/}).click();
+    await expect(dlg.locator('.fw-test-result')).toContainText(/sent over UDP/);
+    await dlg.getByRole('tab', {name: /Delivery|Zustellung/}).click();
+    await dlg.getByLabel(/Interval|Intervall/).fill('300');
+    await dlg.getByRole('button', {name: /Save|Speichern/}).click();
+    await expect(dlg).toBeHidden();
+    const scard = page.locator('.fw-card', {hasText: 'Syslog'});
+    await expect(scard).toContainText('Syslog UDP');
+    // the follower starts once a target wants logs; a pushed line arrives as a journal record
+    await page.request.get(`${DEV}/dev/log?tag=rfd&message=${encodeURIComponent('rfd: hello from the journal')}`);
+    await expect.poll(async () => (await (await page.request.get(`${DEV}/dev/syslog/messages`)).json()) as string[], {timeout: 15_000}).toContainEqual(expect.stringContaining('rfd: hello from the journal'));
+    const msgs = (await (await page.request.get(`${DEV}/dev/syslog/messages`)).json()) as string[];
+    const line = msgs.find((m) => m.includes('hello from the journal')) ?? '';
+    expect(line).toMatch(/^<134>1 \d{4}-\d\d-\d\dT[\d:.]+Z \S+ homematic - log \[homematic@32473 stream="journal" unit_name="rfd.service" host="devbox" pid="\d+" tag="rfd"\] rfd: hello from the journal$/);
+    // an audit line comes twice: as the journal line and as the audit record with its fields
+    await page.request.get(`${DEV}/dev/log?tag=occulited&unit=occulited.service&message=${encodeURIComponent('addon installed: forwarder version=0.3.0 user=admin remote=192.0.2.7')}`);
+    await expect.poll(async () => ((await (await page.request.get(`${DEV}/dev/syslog/messages`)).json()) as string[]).filter((m) => m.includes('addon installed')).length, {timeout: 15_000}).toBe(2);
+    const audit = ((await (await page.request.get(`${DEV}/dev/syslog/messages`)).json()) as string[]).find((m) => m.includes('stream="audit"')) ?? '';
+    expect(audit).toContain('remote="192.0.2.7"');
+    expect(audit).toContain('user="admin"');
+    expect(audit).toContain('version="0.3.0"');
+    expect(audit).toMatch(/\] addon installed: forwarder$/);
+    await expect(scard.locator('.fw-pill').first()).toHaveText(/ok|verbunden/);
+
+    // a GELF target over TCP with the record preset
+    await page.getByRole('combobox', {name: /Target type|Zieltyp/}).selectOption('gelf');
+    await page.getByRole('button', {name: /Add target|Ziel hinzufügen/}).click();
+    await dlg.getByLabel('Name', {exact: true}).fill('Graylog');
+    await dlg.getByLabel(/^Selection$|^Auswahl$/).selectOption({label: 'Protokolle (0)'});
+    await dlg.getByLabel(/^Host$/).fill('127.0.0.1');
+    await dlg.getByLabel(/^Port$/).fill(gelfPort);
+    await dlg.getByRole('radio', {name: 'TCP'}).check();
+    await dlg.getByRole('tab', {name: /^Message$|^Nachricht$/}).click();
+    await dlg.getByRole('button', {name: /Preview|Vorschau/}).click();
+    await expect(dlg.locator('.fw-preview')).toContainText('"version":"1.1"');
+    await expect(dlg.locator('.fw-preview')).toContainText('"_stream":"journal"');
+    await dlg.getByRole('button', {name: /^Test|^Testen/}).click();
+    await expect(dlg.locator('.fw-test-result')).toContainText(/sent over TCP/);
+    await dlg.getByRole('tab', {name: /Delivery|Zustellung/}).click();
+    await dlg.getByLabel(/Interval|Intervall/).fill('300');
+    await dlg.getByRole('button', {name: /Save|Speichern/}).click();
+    await expect(dlg).toBeHidden();
+    await expect(page.locator('.fw-card', {hasText: 'Graylog'})).toContainText('GELF TCP');
+    await page.request.get(`${DEV}/dev/log?tag=hmipserver&severity=err&message=${encodeURIComponent('hmipserver: oops')}`);
+    await expect.poll(async () => JSON.stringify(await (await page.request.get(`${DEV}/dev/gelf/messages`)).json()), {timeout: 15_000}).toContain('hmipserver: oops');
+    const gelf = ((await (await page.request.get(`${DEV}/dev/gelf/messages`)).json()) as {short_message: string; level: number; _unit?: string; _log_unit?: string; _tag?: string; host: string}[]).find((m) => m.short_message === 'hmipserver: oops');
+    expect(gelf?.level).toBe(3);
+    expect(gelf?._log_unit).toBe('hmipserver.service');
+    expect(gelf?._tag).toBe('hmipserver');
+
+    // a Loki target against the dev receiver with the logfmt preset
+    await page.getByRole('combobox', {name: /Target type|Zieltyp/}).selectOption('loki');
+    await page.getByRole('button', {name: /Add target|Ziel hinzufügen/}).click();
+    await dlg.getByLabel('Name', {exact: true}).fill('Loki');
+    await dlg.getByLabel(/^Selection$|^Auswahl$/).selectOption({label: 'Protokolle (0)'});
+    await dlg.getByLabel('URL', {exact: true}).fill(`${DEV}/dev/loki`);
+    await dlg.getByRole('tab', {name: /^Lines$|^Zeilen$/}).click();
+    await expect(dlg.locator('.fw-tpl-row').first().locator('input').first()).toHaveValue('job');
+    await dlg.getByRole('button', {name: /^Test|^Testen/}).click();
+    await expect(dlg.locator('.fw-test-result')).toContainText('HTTP 204');
+    await dlg.getByRole('tab', {name: /Delivery|Zustellung/}).click();
+    await dlg.getByLabel(/Interval|Intervall/).fill('300');
+    await dlg.getByRole('button', {name: /Save|Speichern/}).click();
+    await expect(dlg).toBeHidden();
+    await page.request.get(`${DEV}/dev/log?tag=rfd&severity=warning&message=${encodeURIComponent('rfd: to loki')}`);
+    await expect.poll(async () => JSON.stringify(await (await page.request.get(`${DEV}/dev/loki/pushes`)).json()), {timeout: 15_000}).toContain('rfd: to loki');
+    const pushes = (await (await page.request.get(`${DEV}/dev/loki/pushes`)).json()) as {streams: {stream: Record<string, string>; values: [string, string, Record<string, string>?][]}[]}[];
+    const stream = pushes.flatMap((p) => p.streams).find((s) => s.values.some((v) => v[1] === 'rfd: to loki'));
+    expect(stream?.stream).toEqual({job: 'homematic', kind: 'log', stream: 'journal', unit: 'rfd.service', priority: 'warning'});
+    expect(stream?.values.find((v) => v[1] === 'rfd: to loki')?.[2]?.tag).toBe('rfd');
+
+    // the system page shows the follower
+    await page.getByRole('tab', {name: /^System$/}).click();
+    const lcard = page.locator('.fw-card', {hasText: /^\s*(Logs|Protokolle)/}).first();
+    await expect(lcard).toContainText(/journal, audit/);
+    await expect(lcard.locator('.fw-pill')).toHaveText(/following|verfolgt/);
+    await page.screenshot({path: `test-results/system-0.3-${test.info().project.name}.png`, fullPage: true});
+});
+
+test('an SQL target: the statement editor with the dialect presets and placeholder completion; the Test reports the connection error', async ({page}) => {
+    await page.goto('./');
+    await page.getByRole('combobox', {name: /Target type|Zieltyp/}).selectOption('sql');
+    await page.getByRole('button', {name: /Add target|Ziel hinzufügen/}).click();
+    const dlg = page.getByTestId('target-editor');
+    await dlg.getByLabel('Name', {exact: true}).fill('Postgres');
+    await dlg.getByLabel(/^Selection$|^Auswahl$/).selectOption('');
+    await expect(dlg.getByLabel(/^Port$/)).toHaveValue('5432');
+    await dlg.getByLabel(/^Host$/).fill('127.0.0.1');
+    await dlg.getByLabel(/^Port$/).fill('1');
+    await dlg.getByLabel(/^Database|^Datenbank$/).fill('hm');
+    await dlg.getByLabel(/^User$|^Benutzer$/).fill('hm');
+    await dlg.getByLabel(/Password|Passwort/).fill('pw');
+    // the statements: the wide preset in the editor, rewritten in the preview
+    await dlg.getByRole('tab', {name: /Statements|Anweisungen/}).click();
+    const editor = dlg.locator('.fw-cm').first();
+    await expect(editor.locator('.cm-content')).toContainText('INSERT INTO homematic', {timeout: 15_000});
+    await expect(editor.locator('.cm-content')).toContainText(':rooms::jsonb');
+    await dlg.getByRole('button', {name: /Preview|Vorschau/}).click();
+    await expect(dlg.locator('.fw-preview')).toContainText('-- schema, once per connection:');
+    await expect(dlg.locator('.fw-preview')).toContainText('VALUES ($1, $2, $3');
+    await expect(dlg.locator('.fw-preview')).toContainText(':ts=20');
+    // typing a colon offers the placeholders
+    await editor.locator('.cm-content').click();
+    await page.keyboard.press('End');
+    await page.keyboard.type(' -- :dev');
+    await expect(page.locator('.cm-tooltip-autocomplete')).toBeVisible();
+    await expect(page.locator('.cm-tooltip-autocomplete')).toContainText(':device_name');
+    await page.keyboard.press('Escape');
+    await expect(dlg.getByLabel(/^Preset|^Vorlage/)).toHaveValue('custom');
+    // the MySQL dialect: the port follows and the preset's statements are the MySQL ones
+    await dlg.getByRole('tab', {name: /Connection|Verbindung/}).click();
+    await dlg.getByLabel(/^Port$/).fill('5432');
+    await dlg.getByRole('radio', {name: /MySQL/}).check();
+    await expect(dlg.getByLabel(/^Port$/)).toHaveValue('3306');
+    await dlg.getByLabel(/^Port$/).fill('1');
+    await dlg.getByRole('tab', {name: /Statements|Anweisungen/}).click();
+    await dlg.getByLabel(/^Preset|^Vorlage/).selectOption('wide');
+    await expect(editor.locator('.cm-content')).toContainText('`key`');
+    await expect(dlg.getByLabel(/^Preset|^Vorlage/).locator('option')).toHaveCount(3);
+    await dlg.getByRole('button', {name: /Preview|Vorschau/}).click();
+    await expect(dlg.locator('.fw-preview')).toContainText('VALUES (?, ?, ?');
+    // the Test reaches for the server and reports its refusal; nothing is saved on its own
+    await dlg.getByRole('button', {name: /^Test|^Testen/}).click();
+    await expect(dlg.locator('.fw-test-result')).toContainText(/Failed|Fehlgeschlagen/, {timeout: 20_000});
+    await expect(dlg.locator('.fw-test-result')).toContainText(/refused|timeout|connection/i);
+    await dlg.getByRole('button', {name: /Save|Speichern/}).click();
+    await expect(dlg).toBeHidden();
+    const card = page.locator('.fw-card', {hasText: 'Postgres'});
+    await expect(card).toContainText('MySQL / MariaDB');
+    await expect(card).toContainText('127.0.0.1:1/hm');
+    // the password never comes back
+    const res = await page.request.get('api/v1/targets');
+    expect(await res.text()).not.toContain('"pw"');
+    await card.getByRole('button', {name: /Disable|Deaktivieren/}).click();
+    await expect(card.locator('.fw-pill').first()).toHaveText(/disabled|inaktiv/);
+    await page.screenshot({path: `test-results/targets-0.3-${test.info().project.name}.png`, fullPage: true});
+});

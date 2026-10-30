@@ -60,6 +60,10 @@
     const SOURCES = ['event', 'snapshot', 'sweep'];
     const lang = $derived(i18n.language === 'de' ? 'de' : 'en');
     // the metric groups the backend documents, by source; the prop is the fallback
+    const streams = $derived(inventory?.log_streams ?? logStreams.map((name) => ({name, title: {de: name, en: name}, doc: {de: '', en: ''}})));
+    function toggleStream(name: string, on: boolean) {
+        value.log_streams = on ? [...new Set([...value.log_streams, name])] : value.log_streams.filter((x) => x !== name);
+    }
     const groups = $derived(inventory?.metric_groups ?? metricGroups.map((name) => ({name, source: 'host' as const, title: {de: name, en: name}, doc: {de: '', en: ''}, metrics: []})));
     const groupSources: {source: 'homematic' | 'host'; label: string}[] = [
         {source: 'homematic', label: 'Homematic statistics'},
@@ -237,11 +241,24 @@
         {#if hasKind('log')}
             <div class="fw-row">
                 <span class="fw-label">{t('Log streams')}</span>
-                <ChipInput bind:values={value.log_streams} suggestions={logStreams} label={t('Log streams')} placeholder={logStreams.length ? t('all') : t('(log streams come with a later version)')} />
+                <div>
+                    <div class="fw-help">{t('None ticked: every stream. The journal is followed only while a target wants it.')}</div>
+                    <div class="fw-groups">
+                        {#each streams as st (st.name)}
+                            <label class="fw-group">
+                                <input type="checkbox" checked={value.log_streams.includes(st.name)} onchange={(e) => toggleStream(st.name, (e.currentTarget as HTMLInputElement).checked)} />
+                                <span class="fw-group-text"><span class="fw-group-title">{st.title[lang]} <code class="fw-faint">{st.name}</code></span><span class="fw-help">{st.doc[lang]}</span></span>
+                            </label>
+                        {/each}
+                    </div>
+                </div>
             </div>
             <div class="fw-row">
                 <span class="fw-label">{t('Log units')}</span>
-                <ChipInput bind:values={value.log_units} label={t('Log units')} placeholder={t('all; e.g. occulited.service')} />
+                <div>
+                    <ChipInput bind:values={value.log_units} suggestions={inventory?.log_units ?? []} label={t('Log units')} placeholder={t('all; e.g. occulited.service')} />
+                    <div class="fw-help">{t('systemd units as the journal names them; the suggestions are the units seen since the addon started.')}</div>
+                </div>
             </div>
             <div class="fw-row">
                 <label for="fw-prio">{t('Priority')}</label>

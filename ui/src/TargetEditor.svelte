@@ -11,8 +11,12 @@
     import {get, post, put} from './api.js';
     import {clone, secretNames, TARGET_TYPES, type Presets, type Preview, type SelectionView, type Target, type TargetType, type TemplateHelp, type TestResult} from './model.js';
     import ElasticForm from './targets/ElasticForm.svelte';
+    import GelfForm from './targets/GelfForm.svelte';
     import InfluxForm from './targets/InfluxForm.svelte';
+    import LokiForm from './targets/LokiForm.svelte';
     import PrometheusForm from './targets/PrometheusForm.svelte';
+    import SqlForm from './targets/SqlForm.svelte';
+    import SyslogForm from './targets/SyslogForm.svelte';
     import WebhookForm from './targets/WebhookForm.svelte';
 
     let {open, target, type, selections, notices, onclose, onsaved}: {open: boolean; target: Target | undefined; type: TargetType; selections: SelectionView[]; notices: NoticesStore; onclose: () => void; onsaved: () => void} = $props();
@@ -115,6 +119,13 @@
                 return t('Documents');
             case 'prometheus':
                 return t('Metrics');
+            case 'sql':
+                return t('Statements');
+            case 'syslog':
+            case 'gelf':
+                return t('Message');
+            case 'loki':
+                return t('Lines');
         }
         return t('Templates');
     });
@@ -135,7 +146,31 @@
         }
         return t('Password');
     }
-    const tlsNeeded = $derived(draft?.type !== 'prometheus' || draft.prometheus?.mode === 'remote_write');
+    const tlsNeeded = $derived.by(() => {
+        switch (draft?.type) {
+            case 'prometheus':
+                return draft.prometheus?.mode === 'remote_write';
+            case 'sql':
+                return draft.sql?.tls_mode === 'verify';
+            case 'syslog':
+                return draft.syslog?.transport === 'tls';
+            case 'gelf':
+                return draft.gelf?.transport === 'tls';
+        }
+        return true;
+    });
+    const tlsNote = $derived.by(() => {
+        switch (draft?.type) {
+            case 'prometheus':
+                return t('A scrape endpoint is served by the system\'s own web server with its certificate; nothing to set here.');
+            case 'sql':
+                return t('Applies with the encryption "TLS, certificate checked" on the connection tab.');
+            case 'syslog':
+            case 'gelf':
+                return t('Applies with the transport TLS on the connection tab.');
+        }
+        return '';
+    });
 </script>
 
 <Dialog {open} {title} width="62rem" height="min(88vh, 52rem)" minWidth={720} closable={!busy} {onclose} testId="target-editor">
@@ -175,6 +210,14 @@
                         <ElasticForm bind:draft section={tab} {presets} />
                     {:else if draft.type === 'prometheus'}
                         <PrometheusForm bind:draft section={tab} {presets} />
+                    {:else if draft.type === 'sql'}
+                        <SqlForm bind:draft section={tab} {presets} {help} />
+                    {:else if draft.type === 'syslog'}
+                        <SyslogForm bind:draft section={tab} {presets} />
+                    {:else if draft.type === 'gelf'}
+                        <GelfForm bind:draft section={tab} {presets} />
+                    {:else if draft.type === 'loki'}
+                        <LokiForm bind:draft section={tab} {presets} />
                     {/if}
                     {#if tab === 'connection'}
                         {#each names as name (name)}
@@ -250,7 +293,7 @@
             {:else}
                 <div class="fw-form">
                     {#if !tlsNeeded}
-                        <div class="fw-help">{t('A scrape endpoint is served by the system\'s own web server with its certificate; nothing to set here.')}</div>
+                        <div class="fw-help">{tlsNote}</div>
                     {/if}
                     <div class="fw-row">
                         <span class="fw-label">{t('Certificate check')}</span>

@@ -1,11 +1,17 @@
 // Package devserver runs the whole addon against a fake openccu-lite for the UI's end-to-end
 // tests and for development: FORWARDER_DEV_PORT=8295 go test -count=1 -timeout 0 -run TestServe
 // ./internal/devserver serves the built app (ui/dist) at /addons/forwarder/ on that port, a
-// webhook receiver at /dev/hook (its bodies at /dev/hook/bodies) and an event pusher at
-// /dev/push?address=000A:1&key=ACTUAL_TEMPERATURE&value=21.5, and /dev/reset, until it is killed.
+// webhook receiver at /dev/hook (its bodies at /dev/hook/bodies), an event pusher at
+// /dev/push?address=000A:1&key=ACTUAL_TEMPERATURE&value=21.5, a log line pusher at
+// /dev/log?message=…, a syslog (UDP) and a GELF (TCP) receiver with their messages at
+// /dev/syslog/messages and /dev/gelf/messages, a fake Loki at /dev/loki (its pushes at
+// /dev/loki/pushes), and /dev/reset, until it is killed.
 package devserver
 
 import (
+	"bufio"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -16,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -25,6 +32,7 @@ import (
 	"github.com/hobbyquaker/ccu-addon-kit/go/litesource/fakelite"
 	"github.com/hobbyquaker/lite-addon-forwarder/internal/config"
 	"github.com/hobbyquaker/lite-addon-forwarder/internal/httpapi"
+	"github.com/hobbyquaker/lite-addon-forwarder/internal/logsource"
 	"github.com/hobbyquaker/lite-addon-forwarder/internal/metrics"
 	"github.com/hobbyquaker/lite-addon-forwarder/internal/pipeline"
 	"github.com/hobbyquaker/lite-addon-forwarder/internal/source"
@@ -115,9 +123,193 @@ func bytesLines(b []byte) [][]byte {
 	return out
 }
 
-// fakeSystem is occulited's system API as the metrics poller reads it: a few statistics.
-func fakeSystem() *httptest.Server {
+// fakeJournal is occulited's log stream: a few lines at the start, then whatever /dev/log pushes.
+type fakeJournal struct {
+	mu    sync.Mutex
+	lines []logsource.Line
+	subs  map[chan logsource.Line]bool
+	n     int
+}
+
+func newFakeJournal() *fakeJournal {
+	j := &fakeJournal{subs: map[chan logsource.Line]bool{}}
+	j.push("rfd", "rfd.service", "info", "rfd: duty cycle 3%")
+	j.push("occulited", "occulited.service", "info", "api: change method=PUT route=/api/system/v1/network status=200 user=admin remote=192.0.2.10")
+	j.push("hmipserver", "hmipserver.service", "warning", "hmipserver: a warning")
+	return j
+}
+
+func (j *fakeJournal) push(tag, unit, severity, message string) {
+	j.mu.Lock()
+	j.n++
+	l := logsource.Line{Timestamp: time.Now().UTC().Format(time.RFC3339Nano), Tag: tag, Unit: unit, Severity: severity, PID: 100 + j.n, Message: message, Cursor: fmt.Sprintf("c%d", j.n), Host: "devbox"}
+	j.lines = append(j.lines, l)
+	for ch := range j.subs {
+		select {
+		case ch <- l:
+		default:
+		}
+	}
+	j.mu.Unlock()
+}
+
+func (j *fakeJournal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	tag := r.URL.Query().Get("tag")
+	after := r.URL.Query().Get("after")
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.WriteHeader(200)
+	fl := w.(http.Flusher)
+	ch := make(chan logsource.Line, 64)
+	j.mu.Lock()
+	j.subs[ch] = true
+	skip := after != ""
+	for _, l := range j.lines {
+		if skip {
+			if l.Cursor == after {
+				skip = false
+			}
+			continue
+		}
+		if tag == "" || l.Tag == tag {
+			b, _ := json.Marshal(l)
+			fmt.Fprintf(w, "data: %s\n\n", b)
+		}
+	}
+	j.mu.Unlock()
+	fl.Flush()
+	defer func() {
+		j.mu.Lock()
+		delete(j.subs, ch)
+		j.mu.Unlock()
+	}()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case l := <-ch:
+			if tag == "" || l.Tag == tag {
+				b, _ := json.Marshal(l)
+				fmt.Fprintf(w, "data: %s\n\n", b)
+				fl.Flush()
+			}
+		}
+	}
+}
+
+// receivers are the syslog (UDP), GELF (TCP, null-delimited) and Loki receivers of the dev
+// server, their messages answered as JSON lists.
+type receivers struct {
+	mu     sync.Mutex
+	syslog []string
+	gelf   []json.RawMessage
+	loki   []json.RawMessage
+	udp    net.PacketConn
+	tcp    net.Listener
+}
+
+func newReceivers(t *testing.T) *receivers {
+	rc := &receivers{}
+	var err error
+	if rc.udp, err = net.ListenPacket("udp", "127.0.0.1:0"); err != nil {
+		t.Fatal(err)
+	}
+	if rc.tcp, err = net.Listen("tcp", "127.0.0.1:0"); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		buf := make([]byte, 65536)
+		for {
+			n, _, err := rc.udp.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			rc.mu.Lock()
+			rc.syslog = append(rc.syslog, string(buf[:n]))
+			rc.mu.Unlock()
+		}
+	}()
+	go func() {
+		for {
+			c, err := rc.tcp.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				r := bufio.NewReader(c)
+				for {
+					doc, err := r.ReadBytes(0)
+					doc = bytes.TrimSuffix(doc, []byte{0})
+					if len(doc) > 0 && json.Valid(doc) {
+						rc.mu.Lock()
+						rc.gelf = append(rc.gelf, json.RawMessage(doc))
+						rc.mu.Unlock()
+					}
+					if err != nil {
+						return
+					}
+				}
+			}()
+		}
+	}()
+	return rc
+}
+
+func (rc *receivers) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	switch r.URL.Path {
+	case "/dev/syslog/messages":
+		_ = json.NewEncoder(w).Encode(rc.syslog)
+	case "/dev/gelf/messages":
+		_ = json.NewEncoder(w).Encode(nzRaw(rc.gelf))
+	case "/dev/loki/pushes":
+		_ = json.NewEncoder(w).Encode(nzRaw(rc.loki))
+	case "/dev/loki/loki/api/v1/push":
+		var body io.Reader = r.Body
+		if r.Header.Get("Content-Encoding") == "gzip" {
+			zr, err := gzip.NewReader(r.Body)
+			if err != nil {
+				http.Error(w, err.Error(), 400)
+				return
+			}
+			body = zr
+		}
+		b, _ := io.ReadAll(body)
+		if !json.Valid(b) {
+			http.Error(w, "not json", 400)
+			return
+		}
+		rc.loki = append(rc.loki, json.RawMessage(b))
+		w.WriteHeader(204)
+	case "/dev/syslog/port":
+		fmt.Fprint(w, rc.udp.LocalAddr().(*net.UDPAddr).Port)
+	case "/dev/gelf/port":
+		fmt.Fprint(w, rc.tcp.Addr().(*net.TCPAddr).Port)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func nzRaw(l []json.RawMessage) []json.RawMessage {
+	if l == nil {
+		return []json.RawMessage{}
+	}
+	return l
+}
+
+func (rc *receivers) reset() {
+	rc.mu.Lock()
+	rc.syslog, rc.gelf, rc.loki = nil, nil, nil
+	rc.mu.Unlock()
+}
+
+// fakeSystem is occulited's system API as the metrics poller and the log follower read it: a
+// few statistics and the journal.
+func fakeSystem(journal *fakeJournal) *httptest.Server {
 	mux := http.NewServeMux()
+	mux.Handle("/api/system/v1/log/stream", journal)
 	j := func(v any) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -180,19 +372,43 @@ func TestServe(t *testing.T) {
 	defer cancel()
 	go src.Run(ctx)
 
-	sys := fakeSystem()
+	journal := newFakeJournal()
+	sys := fakeSystem(journal)
 	defer sys.Close()
 	poller := metrics.New(metrics.Options{SystemURL: sys.URL, Interval: func() time.Duration { return time.Duration(store.Settings().MetricsIntervalS) * time.Second }, Wants: pipe.WantsMetric, Emit: src.Emit, Events: src.EventsByInterface, Log: t.Logf})
 	go poller.Run(ctx)
-	store.OnChange = func() { apply(); poller.Kick(); hub.Broadcast() }
+	logs := logsource.New(logsource.Options{SystemURL: sys.URL, Wants: pipe.WantsLog, Emit: src.Emit, Log: t.Logf})
+	go logs.Run(ctx)
+	store.OnChange = func() { apply(); poller.Kick(); logs.Kick(); hub.Broadcast() }
 
 	www := filepath.Join("..", "..", "ui", "dist")
-	h := httpapi.New(httpapi.Options{BasePath: "/addons/forwarder", WWW: www, Store: store, Pipeline: pipe, Source: src, Metrics: poller, Version: "dev", Started: time.Now(), Hub: hub})
+	h := httpapi.New(httpapi.Options{BasePath: "/addons/forwarder", WWW: www, Store: store, Pipeline: pipe, Source: src, Metrics: poller, Logs: logs, Version: "dev", Started: time.Now(), Hub: hub})
 	hk := &hook{}
+	rc := newReceivers(t)
+	defer rc.udp.Close()
+	defer rc.tcp.Close()
 	mux := http.NewServeMux()
 	mux.Handle("/addons/forwarder/", h)
 	mux.Handle("/dev/hook", hk)
 	mux.Handle("/dev/hook/", hk)
+	mux.Handle("/dev/syslog/", rc)
+	mux.Handle("/dev/gelf/", rc)
+	mux.Handle("/dev/loki/", rc)
+	mux.HandleFunc("/dev/log", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		tag, unit, sev := q.Get("tag"), q.Get("unit"), q.Get("severity")
+		if tag == "" {
+			tag = "rfd"
+		}
+		if unit == "" {
+			unit = tag + ".service"
+		}
+		if sev == "" {
+			sev = "info"
+		}
+		journal.push(tag, unit, sev, q.Get("message"))
+		w.WriteHeader(204)
+	})
 	mux.HandleFunc("/dev/es/", fakeES)
 	mux.HandleFunc("/dev/push", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
@@ -218,6 +434,7 @@ func TestServe(t *testing.T) {
 		hk.mu.Lock()
 		hk.bodies = nil
 		hk.mu.Unlock()
+		rc.reset()
 		w.WriteHeader(204)
 	})
 	mux.HandleFunc("/dev/rename", func(w http.ResponseWriter, r *http.Request) {
@@ -229,7 +446,7 @@ func TestServe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("dev server on http://127.0.0.1:%d/addons/forwarder/ (fake system %s)", port, lite.URL)
+	t.Logf("dev server on http://127.0.0.1:%d/addons/forwarder/ (fake system %s, syslog udp %s, gelf tcp %s)", port, lite.URL, strings.TrimPrefix(rc.udp.LocalAddr().String(), "127.0.0.1"), strings.TrimPrefix(rc.tcp.Addr().String(), "127.0.0.1"))
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	if err := srv.Serve(l); err != nil && err != http.ErrServerClosed {
 		t.Fatal(err)
