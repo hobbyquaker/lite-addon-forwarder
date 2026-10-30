@@ -369,7 +369,7 @@ func TestScrapeEndpointAndMetricGroups(t *testing.T) {
 	}
 	var health Health
 	w.call(t, "GET", "/api/v1/health", nil, &health)
-	if len(health.Types) != 4 || health.Metrics.Groups == nil {
+	if len(health.Types) != 8 || health.Metrics.Groups == nil || len(inv.LogStreams) != 2 || inv.LogUnits == nil {
 		t.Errorf("health: %+v", health)
 	}
 	// a Prometheus scrape target over everything

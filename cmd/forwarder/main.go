@@ -1,8 +1,9 @@
 // forwarder is the lite-addon-forwarder daemon: it reads the system's datapoint events, its
 // statistics and the host's figures (and, in a later version, its logs), labels the events with
-// names, rooms and functions, and forwards what the configured selections match to the
-// configured targets - InfluxDB, HTTP webhooks, Elasticsearch, Prometheus and more. It serves its configuration page and API on the loopback,
-// behind lighttpd's proxy of /addons/forwarder/. openccu-lite only.
+// names, rooms and functions, follows the system's journal and its audit lines, and forwards
+// what the configured selections match to the configured targets - InfluxDB, HTTP webhooks,
+// Elasticsearch, Prometheus, PostgreSQL, MySQL, syslog, GELF, Loki. It serves its configuration
+// page and API on the loopback, behind lighttpd's proxy of /addons/forwarder/. openccu-lite only.
 package main
 
 import (
@@ -21,6 +22,7 @@ import (
 	"github.com/hobbyquaker/ccu-addon-kit/go/litesource"
 	"github.com/hobbyquaker/lite-addon-forwarder/internal/config"
 	"github.com/hobbyquaker/lite-addon-forwarder/internal/httpapi"
+	"github.com/hobbyquaker/lite-addon-forwarder/internal/logsource"
 	"github.com/hobbyquaker/lite-addon-forwarder/internal/metrics"
 	"github.com/hobbyquaker/lite-addon-forwarder/internal/pipeline"
 	"github.com/hobbyquaker/lite-addon-forwarder/internal/source"
@@ -112,7 +114,17 @@ func run(addonDir, id string, port int, base, basePath, www, tokenFile string, n
 		Log:       logf,
 	})
 	go poller.Run(ctx)
-	store.OnChange = func() { apply(); poller.Kick(); hub.Broadcast() }
+
+	// the journal and the audit lines, followed while a target wants them
+	logs := logsource.New(logsource.Options{
+		SystemURL: base,
+		HTTP:      &http.Client{Transport: &addonkit.AuthTransport{Source: token}},
+		Wants:     pipe.WantsLog,
+		Emit:      src.Emit,
+		Log:       logf,
+	})
+	go logs.Run(ctx)
+	store.OnChange = func() { apply(); poller.Kick(); logs.Kick(); hub.Broadcast() }
 
 	wrap := func(h http.Handler) http.Handler { return h }
 	wrapScrape := wrap
@@ -126,7 +138,7 @@ func run(addonDir, id string, port int, base, basePath, www, tokenFile string, n
 		cu := addonkit.NewChecker(addonkit.SessionOptions{Base: base, Need: addonkit.LevelUser, AddonID: id, OnRefused: refused})
 		wrapScrape = cu.Handler
 	}
-	h := httpapi.New(httpapi.Options{BasePath: basePath, WWW: www, Store: store, Pipeline: pipe, Source: src, Metrics: poller, Wrap: wrap, WrapScrape: wrapScrape, Version: version, Started: time.Now(), Hub: hub})
+	h := httpapi.New(httpapi.Options{BasePath: basePath, WWW: www, Store: store, Pipeline: pipe, Source: src, Metrics: poller, Logs: logs, Wrap: wrap, WrapScrape: wrapScrape, Version: version, Started: time.Now(), Hub: hub})
 	l, err := addonkit.Listen(port, "")
 	if err != nil {
 		return err

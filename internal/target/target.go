@@ -88,6 +88,14 @@ func New(t config.Target) (Target, error) {
 		return NewElastic(t)
 	case "prometheus":
 		return NewPrometheus(t)
+	case "sql":
+		return NewSQL(t)
+	case "syslog":
+		return NewSyslog(t)
+	case "gelf":
+		return NewGELF(t)
+	case "loki":
+		return NewLoki(t)
 	}
 	return nil, fmt.Errorf("unknown target type %q", t.Type)
 }

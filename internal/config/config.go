@@ -187,6 +187,105 @@ type Prometheus struct {
 	Preset string `json:"preset"`
 }
 
+// SQL is a PostgreSQL (TimescaleDB) or MySQL/MariaDB target: one INSERT statement with :name
+// placeholders, run per record with bound parameters inside one transaction per batch, and an
+// optional schema script run once per connection.
+type SQL struct {
+	// Dialect is postgres or mysql.
+	Dialect  string `json:"dialect"`
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
+	Database string `json:"database"`
+	User     string `json:"user"`
+	// TLSMode is disable, require (encrypted, the certificate not checked) or verify (checked
+	// against the system's authorities or the target's own CA).
+	TLSMode string `json:"tls_mode"`
+	// Insert is the INSERT statement; its :name placeholders are the record's fields, bound as
+	// parameters (never spliced into the SQL).
+	Insert string `json:"insert"`
+	// Schema is a script (CREATE TABLE IF NOT EXISTS …; …) run once per connection before the
+	// first batch when InstallSchema is set.
+	Schema        string `json:"schema"`
+	InstallSchema bool   `json:"install_schema"`
+	// Preset names the preset the statements started from; informational.
+	Preset string `json:"preset"`
+}
+
+// Syslog is a syslog target: RFC 5424 messages over UDP, TCP or TLS.
+type Syslog struct {
+	Host string `json:"host"`
+	Port int    `json:"port"`
+	// Transport is udp, tcp or tls.
+	Transport string `json:"transport"`
+	// Framing is octet (RFC 6587 octet counting) or newline, for tcp and tls.
+	Framing string `json:"framing"`
+	// Facility is 0 … 23 (16 = local0).
+	Facility int `json:"facility"`
+	// Severity is a template rendering a severity name or number; empty takes a log record's
+	// priority and info for everything else.
+	Severity string `json:"severity"`
+	// Hostname overrides the system's host name in the header.
+	Hostname string `json:"hostname"`
+	// AppName and MsgID are templates for the header's APP-NAME and MSGID.
+	AppName string `json:"app_name"`
+	MsgID   string `json:"msg_id"`
+	// SDID is the structured data element id (name@enterprise); empty sends no structured
+	// data. SDParams are its parameters as templates; a parameter named * stands for every
+	// label of a metric or field of a log line.
+	SDID     string          `json:"sd_id"`
+	SDParams []NamedTemplate `json:"sd_params"`
+	// Message is the template of the MSG part.
+	Message string `json:"message"`
+	// Preset names the preset the templates started from; informational.
+	Preset string `json:"preset"`
+}
+
+// GELF is a Graylog Extended Log Format target over UDP (chunked, optionally compressed), TCP
+// or TLS (null-delimited).
+type GELF struct {
+	Host string `json:"host"`
+	Port int    `json:"port"`
+	// Transport is udp, tcp or tls.
+	Transport string `json:"transport"`
+	// Compression is none, gzip or zlib (UDP only).
+	Compression string `json:"compression"`
+	// ShortMessage and FullMessage are templates; an empty full message is left out.
+	ShortMessage string `json:"short_message"`
+	FullMessage  string `json:"full_message"`
+	// Level is a template rendering a syslog severity name or number; empty takes a log
+	// record's priority and info for everything else.
+	Level string `json:"level"`
+	// Fields are the additional fields (without the leading underscore) as templates; a field
+	// named * stands for every label of a metric or field of a log line.
+	Fields []NamedTemplate `json:"fields"`
+	// AllFields adds every field of the record as an additional field.
+	AllFields bool `json:"all_fields"`
+	// Preset names the preset the templates started from; informational.
+	Preset string `json:"preset"`
+}
+
+// Loki is a Grafana Loki target (the push API).
+type Loki struct {
+	// URL is the server (the push goes to /loki/api/v1/push below it).
+	URL string `json:"url"`
+	// TenantID is sent as X-Scope-OrgID when set.
+	TenantID string `json:"tenant_id"`
+	// Auth is none, basic (User and the secret password) or bearer (the secret token).
+	Auth string `json:"auth"`
+	User string `json:"user"`
+	Gzip bool   `json:"gzip"`
+	// Labels are the stream labels as templates (keep them few: every distinct set is a stream);
+	// an empty value leaves the label out.
+	Labels []NamedTemplate `json:"labels"`
+	// Line is the template of the log line.
+	Line string `json:"line"`
+	// Metadata is structured metadata per entry (Loki 3), as templates; a name of * stands for
+	// every label of a metric or field of a log line.
+	Metadata []NamedTemplate `json:"metadata"`
+	// Preset names the preset the templates started from; informational.
+	Preset string `json:"preset"`
+}
+
 // Target is one target.
 type Target struct {
 	ID        string `json:"id"`
@@ -205,6 +304,10 @@ type Target struct {
 	Webhook    *Webhook    `json:"webhook,omitempty"`
 	Elastic    *Elastic    `json:"elastic,omitempty"`
 	Prometheus *Prometheus `json:"prometheus,omitempty"`
+	SQL        *SQL        `json:"sql,omitempty"`
+	Syslog     *Syslog     `json:"syslog,omitempty"`
+	GELF       *GELF       `json:"gelf,omitempty"`
+	Loki       *Loki       `json:"loki,omitempty"`
 
 	// SecretsSet says which secrets are stored (password, token); read-only in the API.
 	SecretsSet map[string]bool `json:"secrets"`
@@ -218,7 +321,7 @@ type Target struct {
 }
 
 // Types lists the target types this build has.
-var Types = []string{"influx", "webhook", "elastic", "prometheus"}
+var Types = []string{"influx", "webhook", "elastic", "prometheus", "sql", "syslog", "gelf", "loki"}
 
 // SecretNames are the secrets a type may hold.
 var SecretNames = map[string][]string{
@@ -226,6 +329,10 @@ var SecretNames = map[string][]string{
 	"webhook":    {"password", "token"},
 	"elastic":    {"password", "token", "api_key"},
 	"prometheus": {"password", "token"},
+	"sql":        {"password"},
+	"syslog":     {},
+	"gelf":       {},
+	"loki":       {"password", "token"},
 }
 
 // DefaultTarget is a new target's defaults.
@@ -242,6 +349,19 @@ func DefaultTarget(typ string) Target {
 	case "prometheus":
 		p := PrometheusPresets["clean"]
 		t.Prometheus = &p
+	case "sql":
+		w := SQLPresets["wide"].Postgres
+		t.SQL = &SQL{Dialect: "postgres", Port: 5432, TLSMode: "disable", Insert: w.Insert, Schema: w.Schema, InstallSchema: true, Preset: "wide"}
+		t.Batch.Size = 200
+	case "syslog":
+		y := SyslogPresets["structured"]
+		t.Syslog = &y
+	case "gelf":
+		g := GELFPresets["record"]
+		t.GELF = &g
+	case "loki":
+		l := LokiPresets["logfmt"]
+		t.Loki = &l
 	}
 	return t
 }
@@ -259,6 +379,18 @@ func (t *Target) clearOthers() {
 	}
 	if t.Type != "prometheus" {
 		t.Prometheus = nil
+	}
+	if t.Type != "sql" {
+		t.SQL = nil
+	}
+	if t.Type != "syslog" {
+		t.Syslog = nil
+	}
+	if t.Type != "gelf" {
+		t.GELF = nil
+	}
+	if t.Type != "loki" {
+		t.Loki = nil
 	}
 }
 
@@ -453,6 +585,140 @@ func (t *Target) Validate() error {
 		if p.StaleS < 0 || p.StaleS > 86400*7 {
 			p.StaleS = 0
 		}
+	case "sql":
+		if t.SQL == nil {
+			return errors.New("sql settings missing")
+		}
+		q := t.SQL
+		switch q.Dialect {
+		case "postgres", "mysql":
+		default:
+			return fmt.Errorf("dialect %q is not postgres or mysql", q.Dialect)
+		}
+		if err := checkHost(q.Host); err != nil {
+			return err
+		}
+		if q.Port <= 0 || q.Port > 65535 {
+			if q.Dialect == "postgres" {
+				q.Port = 5432
+			} else {
+				q.Port = 3306
+			}
+		}
+		if strings.TrimSpace(q.Database) == "" {
+			return errors.New("the database is missing")
+		}
+		switch q.TLSMode {
+		case "":
+			q.TLSMode = "disable"
+		case "disable", "require", "verify":
+		default:
+			return fmt.Errorf("tls mode %q is not disable, require or verify", q.TLSMode)
+		}
+		if strings.TrimSpace(q.Insert) == "" {
+			return errors.New("the INSERT statement is empty")
+		}
+	case "syslog":
+		if t.Syslog == nil {
+			return errors.New("syslog settings missing")
+		}
+		y := t.Syslog
+		if err := checkHost(y.Host); err != nil {
+			return err
+		}
+		if y.Port <= 0 || y.Port > 65535 {
+			y.Port = 514
+		}
+		switch y.Transport {
+		case "":
+			y.Transport = "udp"
+		case "udp", "tcp", "tls":
+		default:
+			return fmt.Errorf("transport %q is not udp, tcp or tls", y.Transport)
+		}
+		switch y.Framing {
+		case "":
+			y.Framing = "octet"
+		case "octet", "newline":
+		default:
+			return fmt.Errorf("framing %q is not octet or newline", y.Framing)
+		}
+		if y.Facility < 0 || y.Facility > 23 {
+			return fmt.Errorf("facility %d is not 0 … 23", y.Facility)
+		}
+		if strings.TrimSpace(y.AppName) == "" {
+			y.AppName = "homematic"
+		}
+		if strings.TrimSpace(y.MsgID) == "" {
+			y.MsgID = "{{ kind }}"
+		}
+		if strings.TrimSpace(y.Message) == "" {
+			return errors.New("the message template is empty")
+		}
+		if y.SDParams == nil {
+			y.SDParams = []NamedTemplate{}
+		}
+		if y.SDID != "" && (strings.ContainsAny(y.SDID, " =]\\\"") || len(y.SDID) > 32) {
+			return fmt.Errorf("the structured data id %q is not an SD-ID", y.SDID)
+		}
+	case "gelf":
+		if t.GELF == nil {
+			return errors.New("gelf settings missing")
+		}
+		g := t.GELF
+		if err := checkHost(g.Host); err != nil {
+			return err
+		}
+		if g.Port <= 0 || g.Port > 65535 {
+			g.Port = 12201
+		}
+		switch g.Transport {
+		case "":
+			g.Transport = "udp"
+		case "udp", "tcp", "tls":
+		default:
+			return fmt.Errorf("transport %q is not udp, tcp or tls", g.Transport)
+		}
+		switch g.Compression {
+		case "":
+			g.Compression = "none"
+		case "none", "gzip", "zlib":
+		default:
+			return fmt.Errorf("compression %q is not none, gzip or zlib", g.Compression)
+		}
+		if strings.TrimSpace(g.ShortMessage) == "" {
+			return errors.New("the short message template is empty")
+		}
+		if g.Fields == nil {
+			g.Fields = []NamedTemplate{}
+		}
+	case "loki":
+		if t.Loki == nil {
+			return errors.New("loki settings missing")
+		}
+		l := t.Loki
+		if err := checkURL(l.URL); err != nil {
+			return err
+		}
+		switch l.Auth {
+		case "":
+			l.Auth = "none"
+		case "none", "basic", "bearer":
+		default:
+			return fmt.Errorf("auth %q is not none, basic or bearer", l.Auth)
+		}
+		if strings.TrimSpace(l.Line) == "" {
+			return errors.New("the line template is empty")
+		}
+		if l.Labels == nil {
+			l.Labels = []NamedTemplate{}
+		}
+		if l.Metadata == nil {
+			l.Metadata = []NamedTemplate{}
+		}
+		if strings.ContainsAny(l.TenantID, " \r\n") {
+			return errors.New("bad tenant id")
+		}
 	}
 	for name := range t.SetSecrets {
 		if !allowedSecret(t.Type, name) {
@@ -469,6 +735,14 @@ func allowedSecret(typ, name string) bool {
 		}
 	}
 	return false
+}
+
+func checkHost(s string) error {
+	s = strings.TrimSpace(s)
+	if s == "" || strings.ContainsAny(s, " /\\@?#") {
+		return fmt.Errorf("the host %q is not a host name or address", s)
+	}
+	return nil
 }
 
 func checkURL(s string) error {

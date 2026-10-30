@@ -196,6 +196,35 @@ func (m *Manager) WantsMetric(group string) bool {
 	return false
 }
 
+// WantsLog tells whether any enabled target's selection takes log records of the stream (the
+// units and the priority left aside), so the journal is followed only while it is forwarded.
+func (m *Manager) WantsLog(stream string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, w := range m.workers {
+		if !w.cfg.Enabled || w.tgt == nil {
+			continue
+		}
+		sel := w.selection().Selection()
+		kinds := len(sel.Kinds) == 0
+		for _, k := range sel.Kinds {
+			kinds = kinds || k == selection.KindLog
+		}
+		if !kinds {
+			continue
+		}
+		if len(sel.LogStreams) == 0 {
+			return true
+		}
+		for _, s := range sel.LogStreams {
+			if s == stream {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Matches tells which targets would take a record (for the UI's preview).
 func (m *Manager) Matches(r *record.Record) []string {
 	m.mu.Lock()

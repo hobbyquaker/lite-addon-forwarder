@@ -19,6 +19,7 @@ import (
 
 	"github.com/hobbyquaker/ccu-addon-kit/go/addonkit"
 	"github.com/hobbyquaker/lite-addon-forwarder/internal/config"
+	"github.com/hobbyquaker/lite-addon-forwarder/internal/logsource"
 	"github.com/hobbyquaker/lite-addon-forwarder/internal/metrics"
 	"github.com/hobbyquaker/lite-addon-forwarder/internal/pipeline"
 	"github.com/hobbyquaker/lite-addon-forwarder/internal/record"
@@ -39,6 +40,8 @@ type Options struct {
 	Source   *source.Source
 	// Metrics is the poller; nil when none runs (a test).
 	Metrics *metrics.Poller
+	// Logs is the journal follower; nil when none runs (a test).
+	Logs *logsource.Follower
 	// Wrap is the session check; nil: none (development only).
 	Wrap func(http.Handler) http.Handler
 	// WrapScrape is the session check of the Prometheus scrape endpoints: the user level, which
@@ -174,6 +177,9 @@ func (o *Options) ownMetrics(w io.Writer) {
 	ms := o.metricsStats()
 	fmt.Fprintf(w, "# TYPE forwarder_metrics_polls_total counter\nforwarder_metrics_polls_total %d\n", ms.Polls)
 	fmt.Fprintf(w, "# TYPE forwarder_metrics_poll_errors gauge\nforwarder_metrics_poll_errors %d\n", len(ms.Errors))
+	ls := o.logsStats()
+	fmt.Fprintf(w, "# TYPE forwarder_logs_following gauge\nforwarder_logs_following %d\n", b2i(ls.Following))
+	fmt.Fprintf(w, "# TYPE forwarder_logs_lines_total counter\nforwarder_logs_lines_total %d\n", ls.Lines)
 	statuses := o.Pipeline.Status()
 	type col struct{ name, typ string }
 	cols := []col{{"sent_total", "counter"}, {"dropped_total", "counter"}, {"retried_total", "counter"}, {"batches_total", "counter"}, {"queued", "gauge"}, {"spilled", "gauge"}, {"lag_seconds", "gauge"}, {"connected", "gauge"}}
@@ -251,18 +257,19 @@ func writeErr(w http.ResponseWriter, err error) {
 
 // Health is GET /api/v1/health.
 type Health struct {
-	Version    string        `json:"version"`
-	Started    time.Time     `json:"started"`
-	UptimeS    int64         `json:"uptime_s"`
-	Source     source.Stats  `json:"source"`
-	Metrics    metrics.Stats `json:"metrics"`
-	Targets    int           `json:"targets"`
-	Selections int           `json:"selections"`
-	Types      []string      `json:"types"`
+	Version    string          `json:"version"`
+	Started    time.Time       `json:"started"`
+	UptimeS    int64           `json:"uptime_s"`
+	Source     source.Stats    `json:"source"`
+	Metrics    metrics.Stats   `json:"metrics"`
+	Logs       logsource.Stats `json:"logs"`
+	Targets    int             `json:"targets"`
+	Selections int             `json:"selections"`
+	Types      []string        `json:"types"`
 }
 
 func (o *Options) health(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, Health{Version: o.Version, Started: o.Started, UptimeS: int64(time.Since(o.Started).Seconds()), Source: o.Source.Stats(), Metrics: o.metricsStats(), Targets: len(o.Store.Targets()), Selections: len(o.Store.Selections()), Types: config.Types})
+	writeJSON(w, 200, Health{Version: o.Version, Started: o.Started, UptimeS: int64(time.Since(o.Started).Seconds()), Source: o.Source.Stats(), Metrics: o.metricsStats(), Logs: o.logsStats(), Targets: len(o.Store.Targets()), Selections: len(o.Store.Selections()), Types: config.Types})
 }
 
 func (o *Options) metricsStats() metrics.Stats {
@@ -272,12 +279,28 @@ func (o *Options) metricsStats() metrics.Stats {
 	return o.Metrics.Stats()
 }
 
+func (o *Options) logsStats() logsource.Stats {
+	if o.Logs == nil {
+		return logsource.Stats{Streams: []string{}}
+	}
+	return o.Logs.Stats()
+}
+
+func (o *Options) logUnits() []string {
+	if o.Logs == nil {
+		return []string{}
+	}
+	return o.Logs.Units()
+}
+
 // InventoryView is GET /api/v1/inventory: the devices and the metric groups and log streams
 // a selection can name.
 type InventoryView struct {
 	source.Inventory
 	MetricGroups []metrics.GroupInfo `json:"metric_groups"`
 	LogStreams   []StreamInfo        `json:"log_streams"`
+	// LogUnits are the units seen in the journal so far, for the editor's suggestions.
+	LogUnits []string `json:"log_units"`
 }
 
 // StreamInfo documents one log stream.
@@ -287,15 +310,25 @@ type StreamInfo struct {
 	Doc   map[string]string `json:"doc"`
 }
 
-// LogStreams lists the log streams this version has (none before 0.3.0).
-var LogStreams = []StreamInfo{}
+// LogStreams lists the log streams: the system's journal and the audit lines occulited writes
+// about changes of the system.
+var LogStreams = []StreamInfo{
+	{Name: logsource.StreamJournal, Title: map[string]string{"de": "Journal", "en": "Journal"}, Doc: map[string]string{
+		"de": "Jedes Protokoll des Systems (systemd-journal): Unit, Priorität, Nachricht; Felder tag, pid, host, facility. Nach Units und Priorität einschränkbar.",
+		"en": "Every log line of the system (the systemd journal): unit, priority, message; fields tag, pid, host, facility. Narrowed by units and priority.",
+	}},
+	{Name: logsource.StreamAudit, Title: map[string]string{"de": "Audit (wer hat was geändert)", "en": "Audit (who changed what)"}, Doc: map[string]string{
+		"de": "Die Zeilen, die das System über Änderungen schreibt - Anmeldungen, Einstellungen, Addons, Firmware - mit user, remote, method, route und status als Feldern.",
+		"en": "The lines the system writes about changes - logins, settings, addons, firmware - with user, remote, method, route and status as fields.",
+	}},
+}
 
 func (o *Options) inventory(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, InventoryView{Inventory: o.Source.Inventory(), MetricGroups: metrics.Groups, LogStreams: LogStreams})
+	writeJSON(w, 200, InventoryView{Inventory: o.Source.Inventory(), MetricGroups: metrics.Groups, LogStreams: LogStreams, LogUnits: o.logUnits()})
 }
 
 func (o *Options) statusMessage() map[string]any {
-	return map[string]any{"source": o.Source.Stats(), "metrics": o.metricsStats(), "targets": o.Pipeline.Status()}
+	return map[string]any{"source": o.Source.Stats(), "metrics": o.metricsStats(), "logs": o.logsStats(), "targets": o.Pipeline.Status()}
 }
 
 // RecentRecord is a record with the targets that would take it.
@@ -705,7 +738,7 @@ func (o *Options) renderTemplate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (o *Options) templateHelp(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, map[string]any{"variables": record.Variables, "filters": tmpl.Filters})
+	writeJSON(w, 200, map[string]any{"variables": record.Variables, "filters": tmpl.Filters, "placeholders": target.Placeholders})
 }
 
 func (o *Options) presets(w http.ResponseWriter, r *http.Request) {
@@ -713,7 +746,7 @@ func (o *Options) presets(w http.ResponseWriter, r *http.Request) {
 	for _, typ := range config.Types {
 		defaults[typ] = config.DefaultTarget(typ)
 	}
-	writeJSON(w, 200, map[string]any{"influx": config.InfluxPresets, "influx_order": config.PresetNames, "webhook": config.WebhookPresets, "elastic": config.ElasticPresets, "elastic_order": config.ElasticPresetNames, "prometheus": config.PrometheusPresets, "prometheus_order": config.PrometheusPresetNames, "defaults": defaults})
+	writeJSON(w, 200, map[string]any{"influx": config.InfluxPresets, "influx_order": config.PresetNames, "webhook": config.WebhookPresets, "elastic": config.ElasticPresets, "elastic_order": config.ElasticPresetNames, "prometheus": config.PrometheusPresets, "prometheus_order": config.PrometheusPresetNames, "sql": config.SQLPresets, "sql_order": config.SQLPresetNames, "syslog": config.SyslogPresets, "syslog_order": config.SyslogPresetNames, "gelf": config.GELFPresets, "gelf_order": config.GELFPresetNames, "loki": config.LokiPresets, "loki_order": config.LokiPresetNames, "defaults": defaults})
 }
 
 func (o *Options) settings(w http.ResponseWriter, r *http.Request) {
