@@ -284,18 +284,22 @@ template(name="parsed" type="string" string="%app-name%|%msgid%|%syslogfacility-
 	_ = exec.Command("docker", "rm", "-f", name).Run()
 	docker(t, "run", "-d", "--rm", "--name", name, "-p", fmt.Sprintf("127.0.0.1:%d:514/udp", udpPort), "-p", fmt.Sprintf("127.0.0.1:%d:514", tcpPort), "-e", "CONF="+conf, "alpine:3.20", "sh", "-c", `apk add -q rsyslog && printf '%s' "$CONF" > /etc/rsyslog.conf && exec rsyslogd -n -f /etc/rsyslog.conf`)
 	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", name).Run() })
-	// wait for the TCP port
+	// wait for rsyslog itself (docker publishes the ports before apk has installed it, so a
+	// connect alone proves nothing)
 	deadline := time.Now().Add(120 * time.Second)
 	for {
-		c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", tcpPort), time.Second)
-		if err == nil {
-			c.Close()
+		out, _ := exec.Command("docker", "logs", name).CombinedOutput()
+		if strings.Contains(string(out), "running as pid 1") {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("rsyslog did not come up: %s", docker(t, "logs", name))
+			t.Fatalf("rsyslog did not come up: %s", out)
 		}
 		time.Sleep(time.Second)
+	}
+	time.Sleep(time.Second)
+	if c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", tcpPort), 5*time.Second); err == nil {
+		c.Close()
 	}
 	ts := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

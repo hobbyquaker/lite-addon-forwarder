@@ -82,7 +82,6 @@ func NewSQL(t config.Target) (*SQL, error) {
 		mc.Timeout, mc.ReadTimeout, mc.WriteTimeout = 10*time.Second, timeout, timeout
 		mc.ParseTime = true
 		mc.InterpolateParams = false
-		mc.Params = map[string]string{"charset": "utf8mb4"}
 		if tlsc != nil {
 			mc.TLS = tlsc
 		}
@@ -349,28 +348,29 @@ func (s *SQL) Test(ctx context.Context, sample *record.Record) (string, error) {
 	if err := s.db.QueryRowContext(ctx, q).Scan(&version); err != nil {
 		return "", s.classify(err)
 	}
+	var notes []string
+	// MySQL commits DDL by itself, so its schema runs before the transaction (and outside it: the
+	// pool holds one connection, which the transaction then takes)
+	if len(s.ddl) > 0 && s.cfg.SQL.Dialect == "mysql" {
+		for _, d := range s.ddl {
+			if _, err := s.db.ExecContext(ctx, d); err != nil {
+				return "", fmt.Errorf("schema: %w", describe(err))
+			}
+		}
+		notes = append(notes, fmt.Sprintf("%d schema statements applied (MySQL commits DDL by itself)", len(s.ddl)))
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", s.classify(err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	var notes []string
-	if len(s.ddl) > 0 {
-		if s.cfg.SQL.Dialect == "mysql" {
-			for _, d := range s.ddl {
-				if _, err := s.db.ExecContext(ctx, d); err != nil {
-					return "", fmt.Errorf("schema: %w", describe(err))
-				}
+	if len(s.ddl) > 0 && s.cfg.SQL.Dialect != "mysql" {
+		for _, d := range s.ddl {
+			if _, err := tx.ExecContext(ctx, d); err != nil {
+				return "", fmt.Errorf("schema: %w", describe(err))
 			}
-			notes = append(notes, fmt.Sprintf("%d schema statements applied (MySQL commits DDL by itself)", len(s.ddl)))
-		} else {
-			for _, d := range s.ddl {
-				if _, err := tx.ExecContext(ctx, d); err != nil {
-					return "", fmt.Errorf("schema: %w", describe(err))
-				}
-			}
-			notes = append(notes, fmt.Sprintf("%d schema statements OK", len(s.ddl)))
 		}
+		notes = append(notes, fmt.Sprintf("%d schema statements OK", len(s.ddl)))
 	}
 	if err := s.insert(ctx, tx, []*record.Record{sample}); err != nil {
 		return "", fmt.Errorf("INSERT: %w", describe(err))
