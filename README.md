@@ -2,12 +2,14 @@
 
 *[English](README.en.md)*
 
-Leitet die Ereignisse der Homematic-Geräte, die Statistiken des Systems und die Kennzahlen des Rechners an externe
-Speicher weiter: **InfluxDB** (1.x, 2.x, 3.x und alles, was das Line-Protokoll spricht: VictoriaMetrics, QuestDB,
-Telegraf), **HTTP-Webhooks** (JSON oder NDJSON), **Elasticsearch / OpenSearch** und **Prometheus** (ein Scrape-Endpunkt
-oder remote_write). Beliebig viele Ziele, wiederverwendbare Auswahlen, konfigurierbare Schemata per Jinja-Templates,
-Status je Ziel, ein Überlauf auf den Datenträger, wenn ein Ziel ausfällt. Ein Addon für
-[openccu-lite](https://github.com/hobbyquaker/openccu-lite).
+Leitet die Ereignisse der Homematic-Geräte, die Statistiken des Systems, die Kennzahlen des Rechners und die
+Protokolle des Systems (das Journal und die Audit-Zeilen: wer hat was geändert) an externe Speicher weiter:
+**InfluxDB** (1.x, 2.x, 3.x und alles, was das Line-Protokoll spricht: VictoriaMetrics, QuestDB, Telegraf),
+**HTTP-Webhooks** (JSON oder NDJSON), **Elasticsearch / OpenSearch**, **Prometheus** (ein Scrape-Endpunkt oder
+remote_write), **PostgreSQL / TimescaleDB** und **MySQL / MariaDB** (eigene INSERT-Anweisungen im Editor), **Syslog**
+(RFC 5424 über UDP, TCP oder TLS), **GELF** (Graylog) und **Grafana Loki**. Beliebig viele Ziele, wiederverwendbare
+Auswahlen, konfigurierbare Schemata per Jinja-Templates, Status je Ziel, ein Überlauf auf den Datenträger, wenn ein
+Ziel ausfällt. Ein Addon für [openccu-lite](https://github.com/hobbyquaker/openccu-lite).
 
 ## Was es tut
 
@@ -22,6 +24,11 @@ Status je Ziel, ein Überlauf auf den Datenträger, wenn ein Ziel ausfällt. Ein
   Callback-Empfänger, *Dienste und Addons* (Zustand, beobachtete Neustarts, Arbeitsspeicher) - vom System; dazu
   *CPU und Last*, *Arbeitsspeicher und Swap*, *Datenträger-IO*, *Speicherplatz*, *Netzwerk*, *Temperatur* und
   *System* (Laufzeit, Prozesse) vom Rechner selbst. Die Liste steht unten.
+- **Protokolle** als zwei Ströme, die eine Auswahl anhakt: das **Journal** des Systems (jede Zeile mit Unit,
+  Priorität, Nachricht und den Feldern tag, pid, host, facility; nach Units und bis zu einer Priorität
+  einschränkbar) und **Audit** - die Zeilen, die das System über Änderungen schreibt (Anmeldungen, Einstellungen,
+  Addons, Firmware), mit `user`, `remote`, `method`, `route` und `status` als Feldern. Das Journal wird nur verfolgt,
+  solange ein Ziel es will, und nach einem Abriss ab der letzten Stelle fortgesetzt.
 - **Auswahlen** (beliebig viele) sagen, was weitergeleitet wird: Geräte und Kanäle einzeln anhaken, dazu Regeln nach
   Schnittstelle, Gerätetyp, Kanaltyp, Datenpunkt (mit Platzhaltern: `*_TEMPERATURE`, `PRESS_*`), Raum und Gewerk,
   sowie Ausschlüsse (Datenpunkte, Geräte, Kanäle). Innerhalb einer Regel genügt ein Eintrag, über Regeln hinweg
@@ -33,7 +40,9 @@ Status je Ziel, ein Überlauf auf den Datenträger, wenn ein Ziel ausfällt. Ein
 - **Schemata per Template.** Was ein Ziel benennt oder formt, ist ein Template in Jinja-Syntax, wie Home Assistant
   sie kennt: `{{ device_name }}`, `{{ rooms | join(",") }}`, `{{ key | lower }}`, `{% if value > 20 %}…{% endif %}`.
   Bei InfluxDB das Measurement, die Tags und die Felder (mit Typ); beim Webhook die URL und der Inhalt je Datensatz;
-  bei Elasticsearch der Indexname und das Dokument; bei Prometheus der Metrikname und die Labels.
+  bei Elasticsearch der Indexname und das Dokument; bei Prometheus der Metrikname und die Labels; bei Syslog und GELF
+  die Nachricht, der Schweregrad und die Felder; bei Loki die Labels und die Zeile. Bei SQL ist es eine
+  **INSERT-Anweisung** mit `:name`-Platzhaltern, deren Werte als gebundene Parameter gehen.
   Jedes Template-Feld zeigt **live**, was es für die letzten echten Datensätze erzeugt, Fehler stehen direkt darunter.
   InfluxDB startet aus einer **Vorlage**: *Sauber* (Standard: ein Measurement je Datenpunkt, Adresse und Namen als
   Tags, der Wert als Feld), *Ein Measurement* oder *Je Gerät*; jede lässt sich danach anpassen.
@@ -53,10 +62,10 @@ Die Datensätze der *Datensätze*-Seite zeigen, was das Addon zuletzt gesehen ha
 ## Installation
 
 Das Paket `forwarder-<arch>-<version>.tar.gz` von der Releases-Seite über die Addons-Seite des Systems installieren
-(oder über den Katalog, sobald es dort steht). Das Addon braucht die Rechte `rpc:read`, `meta:read` und
-`system:read`: es liest Geräte, Beschreibungen, Werte und den Ereignisstrom der Funkschnittstellen, die Namen, Räume
-und Gewerke, und die Statistiken des Systems (Servicemeldungen, Funk, Dienste). Die Konfigurationsseite ist unter
-`/addons/forwarder/` und über den Einstellungen-Knopf des Addons erreichbar.
+(oder über den Katalog, sobald es dort steht). Das Addon braucht die Rechte `rpc:read`, `meta:read`, `system:read`
+und `logs:read`: es liest Geräte, Beschreibungen, Werte und den Ereignisstrom der Funkschnittstellen, die Namen, Räume
+und Gewerke, die Statistiken des Systems (Servicemeldungen, Funk, Dienste) und das Journal. Die Konfigurationsseite ist
+unter `/addons/forwarder/` und über den Einstellungen-Knopf des Addons erreichbar.
 
 ## Datenschutz
 
@@ -110,6 +119,60 @@ Systemmetrik `<gruppe>_<name>{…ihre Labels…}`. Ein Label namens `*` steht f�
 Prometheus nicht erlaubt, werden zu `_`; nur Datensätze mit einer Zahl werden exportiert (Wahrheitswerte 0/1,
 Aufzählungen ihr Index).
 
+## PostgreSQL, TimescaleDB, MySQL und MariaDB
+
+Je Ziel **eine INSERT-Anweisung**, geschrieben im Editor der Konfigurationsseite (Syntaxhervorhebung je Dialekt,
+Vervollständigung der Platzhalter beim Tippen von `:`). Die Platzhalter `:ts`, `:kind`, `:address`, `:key`,
+`:value_num`, `:value_text`, `:value_bool`, `:device_name`, `:rooms`, `:labels`, `:message`, `:fields`, … sind die
+Felder des Datensatzes (die Liste unter *Templates*; Listen und Dicts kommen als JSON-Text, `:ts` als Zeitstempel,
+`:value` in seinem eigenen Typ). Die Anweisung wird einmal in die Form des Treibers umgeschrieben (`$1`, `$2`, … bei
+PostgreSQL, `?` bei MySQL) und **die Werte gehen ausschließlich als gebundene Parameter** zum Server - ein Gerätename
+kann die Anweisung nie verändern. Ein Paket ist eine Transaktion; eine Anweisung, die der Server wegen ihres Inhalts
+ablehnt (Syntax, Spalte, Constraint), verwirft das Paket und zählt es, eine verlorene Verbindung, ein falsches
+Passwort oder eine unbekannte Datenbank halten es in der Warteschlange. Optional ein **Schema-Skript** (`CREATE TABLE
+IF NOT EXISTS …`, mehrere Anweisungen mit `;`), das einmal je Verbindung vor dem ersten Paket läuft. **Testen** führt
+Schema und INSERT in einer Transaktion aus, die zurückgerollt wird, und zeigt die Version des Servers (MySQL schreibt
+DDL von selbst fest; dort gilt das Zurückrollen dem INSERT). Vorlagen: *Eine breite Tabelle* `homematic` mit einer
+Spalte je Feld (Standard), *Ereignisse* (eine schmale Tabelle `homematic_events`) und *TimescaleDB* (die breite
+Tabelle als Hypertable). Die Treiber (pgx, go-sql-driver/mysql) sind reines Go; CrateDB und andere, die das
+PostgreSQL-Protokoll sprechen, gehen mit dem Dialekt PostgreSQL. TLS: aus, ohne Prüfung oder geprüft (mit eigener CA
+im Reiter TLS).
+
+## Syslog und GELF
+
+**Syslog** sendet RFC-5424-Nachrichten über UDP, TCP oder TLS (Rahmung: Oktettzählung nach RFC 6587 oder eine Zeile
+je Nachricht): `<PRI>1 ZEIT HOSTNAME APP-NAME - MSGID [SD-ELEMENT] NACHRICHT`. APP-NAME, MSGID, die Nachricht und die
+Parameter des SD-Elements sind Templates, der Schweregrad eine Protokollzeile ihre Priorität (sonst `info`, oder ein
+Template), die Facility eine Einstellung (`local0`). Die Vorlage *Strukturiert* legt die Felder des Datensatzes in ein
+SD-Element `homematic@32473` (ein Parameter namens `*` steht für jedes Label einer Metrik oder Feld einer
+Protokollzeile), so wie rsyslog, syslog-ng und SIEMs sie auswerten; *Schlicht* sendet nur eine Textzeile.
+
+**GELF** (Graylog Extended Log Format 1.1) sendet über UDP komprimierte Datagramme (gzip oder zlib, oberhalb von
+1420 Bytes in Chunks) oder über TCP/TLS je Nachricht ein JSON mit Nullbyte dahinter. `short_message`, `full_message`
+und `level` sind Templates; die Zusatzfelder (`_kind`, `_address`, `_key`, `_value`, `_device_name`, …) kommen aus einer
+Template-Liste oder, mit der Vorlage *Der ganze Datensatz*, aus jedem Feld des Datensatzes.
+
+## Grafana Loki
+
+Ein Push an `/loki/api/v1/push` je Paket, die Datensätze nach ihren **Labels** in Streams gruppiert und je Stream
+nach Zeit sortiert; Tenant (`X-Scope-OrgID`), Basic oder Bearer, gzip. Die Labels, die **Zeile** und die
+**structured metadata** (Loki 3; je Eintrag, nicht indiziert) sind Templates. Die Vorlage *logfmt* hält die Labels
+wenig und grob (`job`, `kind`, `interface`, `group`, `stream`, `unit`, `priority` - jede eigene Label-Kombination ist
+in Loki ein Stream, also keine Adressen oder Werte in Labels) und schreibt die Felder als `key=value` in die Zeile, die
+Labels einer Metrik und die Felder einer Protokollzeile als structured metadata; *JSON* schreibt den ganzen Datensatz
+als JSON-Zeile. Ein 400 (ein zu alter Eintrag, ein Formfehler) verwirft das Paket, ein 429 oder Serverfehler wiederholt.
+
+## Die Protokollströme
+
+| Strom | Was er trägt |
+| --- | --- |
+| `journal` | jede Zeile des systemd-Journals: `log_unit` (die Unit), `priority` (emerg … debug), `message`, die Felder `tag`, `pid`, `host`, `facility`, `area` |
+| `audit` | die Zeilen, die das System über Änderungen schreibt: `message` ist die Nachricht (`api: change`, `auth: login`, …), die Felder `user`, `remote` und was die Zeile sonst nennt (`method`, `route`, `status`, …) |
+
+Eine Auswahl der Art *Protokolle* hakt die Ströme an, nennt Units (`rfd.service`, `occulited.service`, …; der Editor
+schlägt die seit dem Start gesehenen vor) und eine Priorität, bis zu der weitergeleitet wird. Das Journal wird nur
+verfolgt, solange ein Ziel es will; die *System*-Seite zeigt den Verfolger (Ströme, Zeilen, Neuverbindungen).
+
 ## Die Metrikgruppen
 
 Jede Metrik trägt das Label `host`; die Tabelle nennt die weiteren. Zähler enden auf `_total`, Raten entstehen aus
@@ -141,7 +204,8 @@ Die Variablen sind die Felder des Datensatzes: `ts` (ein Zeitobjekt; `ts | date(
 `ts | unix`, `ts | unix_ms`, `ts | iso`), `ts_rfc3339`, `ts_unix`, `ts_ms`, `ts_ns`, `kind`, `interface`, `device`,
 `channel`, `address`, `key`, `value`, `value_num`, `value_text`, `value_bool`, `type`, `unit`, `device_type`,
 `channel_type`, `device_name`, `channel_name`, `rooms`, `functions`, `source`, bei Metriken `group`, `name` und
-`labels`, und `record` (der ganze Datensatz: `{{ record | tojson }}`). Dazu Jinjas Filter (`join`, `lower`, `upper`, `default`, `replace`, `round`, `int`,
+`labels`, bei Protokollen `stream`, `log_unit`, `priority`, `message` und `fields`, und `record` (der ganze Datensatz:
+`{{ record | tojson }}`). Dieselben Namen sind die `:name`-Platzhalter der SQL-Anweisungen. Dazu Jinjas Filter (`join`, `lower`, `upper`, `default`, `replace`, `round`, `int`,
 `float`, `string`, `first`, `last`, `length`, `tojson`, …) und `slug` (ein Name als Bezeichner: `heizung_bad_1`). Die
 Templates sind abgeschottet: kein `include`/`import`, kein Datei- oder Netzzugriff, Grenzen für Laufzeit und
 Ausgabe. Die Konfigurationsseite listet alles unter *Variablen und Filter*.

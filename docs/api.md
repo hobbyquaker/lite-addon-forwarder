@@ -11,8 +11,8 @@ All paths below are under `/addons/forwarder/api/v1`.
 
 | Route | Answer |
 | --- | --- |
-| `GET /health` | `{version, started, uptime_s, source: {…}, metrics: {…}, targets, selections, types}` |
-| `GET /status` | `{source: {…}, metrics: {…}, targets: [Status]}` |
+| `GET /health` | `{version, started, uptime_s, source: {…}, metrics: {…}, logs: {following, streams, lines, audit, reconnects, last_line, last_error}, targets, selections, types}` |
+| `GET /status` | `{source: {…}, metrics: {…}, logs: {…}, targets: [Status]}` |
 | `GET /stream` | the same as Server-Sent Events (`event: status`), on every change and at least every 5 s |
 | `GET /addons/forwarder/metrics/{id}` | **outside the API, at the user level:** the exposition of a Prometheus target in scrape mode; 404 for an unknown or disabled target. The system's gate in front of `/addons/forwarder/` and the daemon admit a session or an API token of the scope `addon:forwarder` (`Authorization: Bearer`), which is what a scraper on the LAN carries; the configuration API needs the admin level. The forwarder's own `forwarder_*` figures follow the series |
 
@@ -29,7 +29,7 @@ A target's `Status`: `id`, `name`, `type`, `enabled`, `running`, `connected`, `s
 
 | Route | Answer |
 | --- | --- |
-| `GET /inventory` | the devices and channels with names, rooms, functions, types and datapoint keys; the lists of interfaces, rooms, functions, device types, channel types and keys with counts; `metric_groups` (each `{name, source: homematic\|host, title: {de, en}, doc: {de, en}, metrics: [{name, labels, unit, doc}]}`) and `log_streams` for the selection editor |
+| `GET /inventory` | the devices and channels with names, rooms, functions, types and datapoint keys; the lists of interfaces, rooms, functions, device types, channel types and keys with counts; `metric_groups` (each `{name, source: homematic\|host, title: {de, en}, doc: {de, en}, metrics: [{name, labels, unit, doc}]}`) and `log_streams` (`journal`, `audit`, each `{name, title: {de, en}, doc: {de, en}}`) for the selection editor; `log_units` are the units the journal has shown since the start, for its suggestions |
 | `GET /recent?n=50&selection=<id>` | the newest records (newest first), each with `summary` and `targets` (the ids of the targets whose selection matches) |
 
 ## The record
@@ -80,8 +80,8 @@ globs (`PRESS_*`). Rooms and functions are matched by name, on the labels the so
  "secrets":{"token":true}}
 ```
 
-- `type` is `influx`, `webhook`, `elastic` or `prometheus`; the matching object holds the connection and the
-  templates.
+- `type` is `influx`, `webhook`, `elastic`, `prometheus`, `sql`, `syslog`, `gelf` or `loki`; the matching object
+  holds the connection and the templates.
 - **Secrets** (`password`, `token`, `api_key`, as the type allows) are never answered: `secrets` says
   which are set. A write sets one with `"set_secrets": {"token": "…"}` and removes one with
   `"clear_secrets": ["token"]`.
@@ -106,6 +106,28 @@ globs (`PRESS_*`). Rooms and functions are matched by name, on the labels the so
   metric name template), `labels` (named templates; a label named `*` stands for every label of a metric record),
   `stale_s` (scrape mode: a series without a new record for this long is left out; 0 keeps all), `preset` (`clean`,
   `one_metric`, `custom`). Only records with a number are exported.
+- An `sql` target has `dialect` (`postgres` or `mysql`), `host`, `port` (5432 or 3306 by default), `database`,
+  `user` and the secret `password`, `tls_mode` (`disable`, `require`: encrypted without a check, `verify`: checked
+  against the system's authorities or the target's `tls.ca`), `insert` (one INSERT statement whose `:name`
+  placeholders are the template variables - `GET /templates/help` lists them as `placeholders`; rewritten to `$n` or
+  `?`, the values bound, never spliced; `rooms`, `functions`, `labels`, `fields` and `record` arrive as JSON text),
+  `schema` (a script run once per connection before the first batch when `install_schema` is set), `preset` (`wide`,
+  `events`, `timescale`, `custom`). A batch is one transaction. Test runs the schema and the INSERT in a transaction
+  that is rolled back (MySQL commits DDL by itself) and answers the server's version.
+- A `syslog` target has `host`, `port` (514), `transport` (`udp`, `tcp`, `tls`), `framing` (`octet` or `newline`, for
+  a stream), `facility` (0 … 23), `severity` (a template rendering a severity name or number; empty: a log record's
+  priority, `info` otherwise), `hostname` (overrides the system's), `app_name` and `msg_id` (templates), `sd_id` (the
+  structured data element's id, empty for none) with `sd_params` (named templates; a name of `*` stands for every
+  label of a metric or field of a log line), `message` (a template), `preset` (`structured`, `plain`, `custom`).
+- A `gelf` target has `host`, `port` (12201), `transport` (`udp`: compressed datagrams, chunked above 1420 bytes;
+  `tcp`, `tls`: null-delimited), `compression` (`none`, `gzip`, `zlib`; UDP only), `short_message`, `full_message`
+  and `level` (templates; the level as the syslog severity), `fields` (named templates for the additional fields,
+  without the underscore; `*` as above), `all_fields` (every field of the record as `_<name>`), `preset` (`record`,
+  `compact`, `custom`).
+- A `loki` target has `url` (the push goes to `/loki/api/v1/push` below it), `tenant_id` (`X-Scope-OrgID`), `auth`
+  (`none`, `basic`, `bearer`), `user`, `gzip`, `labels` (named templates; the rendered set is the stream), `line` (a
+  template), `metadata` (named templates of the structured metadata per entry; `*` as above), `preset` (`logfmt`,
+  `json`, `custom`).
 
 | Route | |
 | --- | --- |
@@ -121,8 +143,8 @@ globs (`PRESS_*`). Rooms and functions are matched by name, on the labels the so
 | Route | |
 | --- | --- |
 | `POST /templates/render` `{"template": "…", "selection": "<id>", "n": 5}` | renders against the recent records: `{error?, results: [{record, output, error?}]}` |
-| `GET /templates/help` | the variables and the filters, documented in German and English |
-| `GET /presets` | the Influx presets (`clean`, `one_measurement`, `per_device`), the webhook presets, the Elasticsearch presets (`record`, `flat`), the Prometheus presets (`clean`, `one_metric`) and the defaults per type |
+| `GET /templates/help` | the variables and the filters, documented in German and English, and `placeholders`: the names an SQL statement may use |
+| `GET /presets` | the Influx presets (`clean`, `one_measurement`, `per_device`), the webhook presets, the Elasticsearch presets (`record`, `flat`), the Prometheus presets (`clean`, `one_metric`), the SQL presets (`wide`, `events`, `timescale`; each `{postgres: {insert, schema}, mysql: {…}, timescale_only}`), the syslog presets (`structured`, `plain`), the GELF presets (`record`, `compact`), the Loki presets (`logfmt`, `json`) and the defaults per type |
 
 ## Settings
 

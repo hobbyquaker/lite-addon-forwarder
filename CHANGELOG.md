@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.3.0] - 2026-10-30
+
+- **PostgreSQL / TimescaleDB and MySQL / MariaDB:** one INSERT statement per target, written in an editor with
+  highlighting per dialect and completion of the `:name` placeholders; the values go to the server as bound
+  parameters only, never spliced into the SQL. An optional schema script runs once per connection; a batch is one
+  transaction; Test runs everything in a transaction that is rolled back and shows the server's version. Presets: one
+  wide table, a narrow events table, a TimescaleDB hypertable. TLS off, unchecked or checked with an own CA. The
+  drivers are pure Go; the binary stays static.
+- **Syslog:** RFC 5424 over UDP, TCP or TLS with octet-counted or newline framing; APP-NAME, MSGID, the message and
+  a structured data element are templates, the severity a log line's priority or a template, the facility a setting.
+- **GELF (Graylog):** over UDP with gzip or zlib and 1420-byte chunks, or null-delimited over TCP/TLS; the short and
+  full message, the level and the additional fields are templates, or every field of the record.
+- **Grafana Loki:** the push API with streams grouped by the rendered labels, the line and structured metadata as
+  templates, a tenant, Basic or Bearer, gzip.
+- **Log streams:** the system's journal (unit, priority, message, fields) and the audit lines the system writes about
+  changes (who did what from where, their attributes as fields), ticked in the selection editor with units and a
+  priority. The journal is followed only while a target wants it and resumed at the last cursor after a drop. The
+  addon now asks for `logs:read`.
+- The system page shows the follower; the TLS tab says when it applies; the selection editor suggests the units the
+  journal has shown.
+
 ## [0.2.0] - 2026-10-30
 
 - **Statistics and system metrics** as metric records, in thirteen groups a selection ticks (only ticked groups are

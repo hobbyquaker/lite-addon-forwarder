@@ -2,12 +2,13 @@
 
 *[Deutsch](README.md)*
 
-Forwards the Homematic devices' events, the system's statistics and the machine's figures to external stores:
-**InfluxDB** (1.x, 2.x, 3.x and everything that speaks the line protocol: VictoriaMetrics, QuestDB, Telegraf),
-**HTTP webhooks** (JSON or NDJSON), **Elasticsearch / OpenSearch** and **Prometheus** (a scrape endpoint or
-remote_write). Any number of targets, reusable selections, configurable schemas through Jinja templates, a status per
-target, an overflow to disk while a target is down. An addon for
-[openccu-lite](https://github.com/hobbyquaker/openccu-lite).
+Forwards the Homematic devices' events, the system's statistics, the machine's figures and the system's logs (the
+journal and the audit lines: who changed what) to external stores: **InfluxDB** (1.x, 2.x, 3.x and everything that
+speaks the line protocol: VictoriaMetrics, QuestDB, Telegraf), **HTTP webhooks** (JSON or NDJSON), **Elasticsearch /
+OpenSearch**, **Prometheus** (a scrape endpoint or remote_write), **PostgreSQL / TimescaleDB** and **MySQL / MariaDB**
+(your own INSERT statements in an editor), **Syslog** (RFC 5424 over UDP, TCP or TLS), **GELF** (Graylog) and **Grafana
+Loki**. Any number of targets, reusable selections, configurable schemas through Jinja templates, a status per target,
+an overflow to disk while a target is down. An addon for [openccu-lite](https://github.com/hobbyquaker/openccu-lite).
 
 ## What it does
 
@@ -22,6 +23,11 @@ target, an overflow to disk while a target is down. An addon for
   *services and addons* (state, observed restarts, memory) - from the system; and *CPU and load*, *memory and swap*,
   *disk IO*, *storage*, *network*, *temperature* and *system* (uptime, processes) from the machine itself. The list
   is below.
+- **Logs** as two streams a selection ticks: the system's **journal** (every line with its unit, priority, message
+  and the fields tag, pid, host, facility; narrowed by units and up to a priority) and **audit** - the lines the
+  system writes about changes (logins, settings, addons, firmware), with `user`, `remote`, `method`, `route` and
+  `status` as fields. The journal is followed only while a target wants it, and resumed at the last cursor after a
+  drop.
 - **Selections** (any number) say what is forwarded: tick devices and channels one by one, add rules by interface,
   device type, channel type, datapoint (with wildcards: `*_TEMPERATURE`, `PRESS_*`), room and function, and
   exclusions (datapoints, devices, channels). Within a rule any entry matches, across rules all must, empty rules do
@@ -33,7 +39,9 @@ target, an overflow to disk while a target is down. An addon for
 - **Schemas by template.** Whatever a target names or shapes is a template in the Jinja syntax Home Assistant users
   know: `{{ device_name }}`, `{{ rooms | join(",") }}`, `{{ key | lower }}`, `{% if value > 20 %}…{% endif %}`. For
   InfluxDB the measurement, the tags and the fields (with a type); for the webhook the URL and the body per record;
-  for Elasticsearch the index name and the document; for Prometheus the metric name and the labels.
+  for Elasticsearch the index name and the document; for Prometheus the metric name and the labels; for syslog and
+  GELF the message, the severity and the fields; for Loki the labels and the line. For SQL it is an **INSERT
+  statement** with `:name` placeholders whose values go in as bound parameters.
   Every template field shows **live** what it renders for the recent real records, with errors right under it.
   InfluxDB starts from a **preset**: *Clean* (the default: a measurement per datapoint, the address and names as
   tags, the value as a field), *One measurement* or *Per device*; each can be edited afterwards.
@@ -51,10 +59,10 @@ The *Records* page shows what the addon saw last and which targets it went to.
 ## Installation
 
 Install the package `forwarder-<arch>-<version>.tar.gz` from the releases page through the system's Addons page (or
-from the catalogue once it is listed). The addon needs the scopes `rpc:read`, `meta:read` and `system:read`: it reads
-the devices, descriptions, values and the event stream of the radio interfaces, the names, rooms and functions, and
-the system's statistics (service messages, radio, services). The configuration page is at `/addons/forwarder/` and
-behind the addon's Settings button.
+from the catalogue once it is listed). The addon needs the scopes `rpc:read`, `meta:read`, `system:read` and
+`logs:read`: it reads the devices, descriptions, values and the event stream of the radio interfaces, the names, rooms
+and functions, the system's statistics (service messages, radio, services) and the journal. The configuration page is
+at `/addons/forwarder/` and behind the addon's Settings button.
 
 ## Privacy
 
@@ -106,6 +114,58 @@ The **metric name** and the **labels** are templates; the *Clean* preset turns a
 `<group>_<name>{…its labels…}`. A label named `*` stands for every label of a metric. Characters Prometheus does not
 allow become `_`; only records with a number are exported (booleans 0/1, enums their index).
 
+## PostgreSQL, TimescaleDB, MySQL and MariaDB
+
+**One INSERT statement per target**, written in the configuration page's editor (highlighting per dialect, completion
+of the placeholders when you type `:`). The placeholders `:ts`, `:kind`, `:address`, `:key`, `:value_num`,
+`:value_text`, `:value_bool`, `:device_name`, `:rooms`, `:labels`, `:message`, `:fields`, … are the record's fields
+(the list under *Templates*; lists and dicts arrive as JSON text, `:ts` as a timestamp, `:value` in its own type). The
+statement is rewritten once into the driver's form (`$1`, `$2`, … for PostgreSQL, `?` for MySQL) and **the values go
+to the server as bound parameters only** - a device name can never change the statement. A batch is one transaction;
+a statement the server refuses for its content (syntax, a column, a constraint) drops the batch and counts it, while
+a lost connection, a wrong password or an unknown database keep it queued. Optionally a **schema script** (`CREATE
+TABLE IF NOT EXISTS …`, several statements separated by `;`) runs once per connection before the first batch. **Test**
+runs the schema and the INSERT in a transaction that is rolled back and shows the server's version (MySQL commits DDL
+by itself; there the rollback covers the INSERT). Presets: *One wide table* `homematic` with a column per field (the
+default), *Events* (a narrow table `homematic_events`) and *TimescaleDB* (the wide table as a hypertable). The drivers
+(pgx, go-sql-driver/mysql) are pure Go; CrateDB and others that speak the PostgreSQL protocol work with the PostgreSQL
+dialect. TLS: off, unchecked or checked (with an own CA in the TLS tab).
+
+## Syslog and GELF
+
+**Syslog** sends RFC 5424 messages over UDP, TCP or TLS (framing: octet counting after RFC 6587 or one message per
+line): `<PRI>1 TIME HOSTNAME APP-NAME - MSGID [SD-ELEMENT] MESSAGE`. APP-NAME, MSGID, the message and the parameters
+of the SD element are templates, the severity is a log line's priority (`info` otherwise, or a template), the facility
+a setting (`local0`). The preset *Structured* puts the record's fields into an SD element `homematic@32473` (a
+parameter named `*` stands for every label of a metric or field of a log line), as rsyslog, syslog-ng and SIEMs parse
+them; *Plain* sends a text line only.
+
+**GELF** (Graylog Extended Log Format 1.1) sends compressed datagrams over UDP (gzip or zlib, chunked above 1420
+bytes) or, over TCP/TLS, one JSON document per message followed by a null byte. `short_message`, `full_message` and
+`level` are templates; the additional fields (`_kind`, `_address`, `_key`, `_value`, `_device_name`, …) come from a
+template list or, with the preset *The whole record*, from every field of the record.
+
+## Grafana Loki
+
+One push to `/loki/api/v1/push` per batch, the records grouped into streams by their **labels** and sorted by time
+within a stream; a tenant (`X-Scope-OrgID`), Basic or Bearer, gzip. The labels, the **line** and the **structured
+metadata** (Loki 3; per entry, not indexed) are templates. The preset *logfmt* keeps the labels few and coarse (`job`,
+`kind`, `interface`, `group`, `stream`, `unit`, `priority` - every distinct label set is a stream in Loki, so no
+addresses or values in labels) and writes the fields as `key=value` into the line, a metric's labels and a log line's
+fields as structured metadata; *JSON* writes the whole record as a JSON line. A 400 (an entry too old, a malformed
+push) drops the batch, a 429 or a server error retries it.
+
+## The log streams
+
+| Stream | What it carries |
+| --- | --- |
+| `journal` | every line of the systemd journal: `log_unit` (the unit), `priority` (emerg … debug), `message`, the fields `tag`, `pid`, `host`, `facility`, `area` |
+| `audit` | the lines the system writes about changes: `message` is the message (`api: change`, `auth: login`, …), the fields `user`, `remote` and whatever else the line names (`method`, `route`, `status`, …) |
+
+A selection of the kind *Logs* ticks the streams, names units (`rfd.service`, `occulited.service`, …; the editor
+suggests the ones seen since the start) and a priority up to which lines are forwarded. The journal is followed only
+while a target wants it; the *System* page shows the follower (streams, lines, reconnects).
+
 ## The metric groups
 
 Every metric carries the label `host`; the table names the others. Counters end in `_total`, rates come from the
@@ -136,8 +196,9 @@ field: `cpu,host=ccu,mode=total usage_percent=12.5`. In Elasticsearch a metric i
 The variables are the record's fields: `ts` (a time object; `ts | date("2006-01-02 15:04")`, `ts | unix`,
 `ts | unix_ms`, `ts | iso`), `ts_rfc3339`, `ts_unix`, `ts_ms`, `ts_ns`, `kind`, `interface`, `device`, `channel`,
 `address`, `key`, `value`, `value_num`, `value_text`, `value_bool`, `type`, `unit`, `device_type`, `channel_type`,
-`device_name`, `channel_name`, `rooms`, `functions`, `source`, for metrics `group`, `name` and `labels`, and `record`
-(the whole record: `{{ record | tojson }}`).
+`device_name`, `channel_name`, `rooms`, `functions`, `source`, for metrics `group`, `name` and `labels`, for logs
+`stream`, `log_unit`, `priority`, `message` and `fields`, and `record` (the whole record: `{{ record | tojson }}`). The
+same names are the `:name` placeholders of the SQL statements.
 Plus Jinja's filters (`join`, `lower`, `upper`, `default`, `replace`, `round`, `int`, `float`, `string`, `first`,
 `last`, `length`, `tojson`, …) and `slug` (a name as an identifier: `heizung_bad_1`). The templates are sandboxed: no
 `include`/`import`, no file or network access, limits on time and output. The configuration page lists everything

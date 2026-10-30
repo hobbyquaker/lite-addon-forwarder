@@ -55,7 +55,17 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - run: FORWARDER_DOCKER=1 go test -count=1 -timeout 30m -run TestRoundTrip -v ./internal/roundtrip
+      - run: FORWARDER_DOCKER=1 go test -count=1 -timeout 30m -run 'TestRoundTrip$|TestRoundTripStores$' -v ./internal/roundtrip
+
+  roundtrip-sql-logs:
+    name: round trip (PostgreSQL, TimescaleDB, MariaDB, Loki, rsyslog in docker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: FORWARDER_DOCKER=1 go test -count=1 -timeout 30m -run TestRoundTripStores03 -v ./internal/roundtrip
 
   package:
     name: packages (aarch64, x86_64, armv7l)
