@@ -11,8 +11,9 @@
   data stream, an ingest pipeline, Basic, API key or Bearer, gzip, and an index template installed on the first
   connection that maps the record's fields with fixed types. A refused document is dropped and counted, a 429 or
   server error retries the batch.
-- **Prometheus:** a scrape endpoint at `/addons/forwarder/metrics/<target id>`, protected by a token the page
-  generates, with the newest value per series and the forwarder's own figures; or remote_write (protobuf in snappy)
+- **Prometheus:** a scrape endpoint at `/addons/forwarder/metrics/<target id>`, scraped with an API token of the
+  system that holds the scope `addon:forwarder`, with the newest value per series and the forwarder's own figures; or
+  remote_write (protobuf in snappy)
   to Prometheus, VictoriaMetrics, Mimir, Thanos or Grafana Cloud. The metric name and the labels are templates.
 - **Overflow on disk:** when a target's memory queue is full the records go to `var/spill/<target id>/` (50 MB per
   target by default, adjustable, 0 switches it off), and a restart of the addon goes on where it stopped; when the

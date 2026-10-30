@@ -56,8 +56,6 @@ func (e *PartialError) Unwrap() error { return e.Err }
 
 // Exposer is a target that serves its values itself (the Prometheus scrape endpoint).
 type Exposer interface {
-	// Authorize tells whether a scrape token is the target's.
-	Authorize(token string) bool
 	// Expose writes the exposition.
 	Expose(w io.Writer, now time.Time)
 }

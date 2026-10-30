@@ -361,9 +361,9 @@ export const MESSAGES: Catalogue = {
     'remote_write: the addon pushes to Prometheus, VictoriaMetrics, Mimir, Thanos or Grafana Cloud': {de: 'remote_write: das Addon sendet an Prometheus, VictoriaMetrics, Mimir, Thanos oder Grafana Cloud', en: 'remote_write: the addon pushes to Prometheus, VictoriaMetrics, Mimir, Thanos or Grafana Cloud'},
     Endpoint: {de: 'Endpunkt', en: 'Endpoint'},
     '(shown after saving)': {de: '(nach dem Speichern sichtbar)', en: '(shown after saving)'},
-    "Prometheus scrapes it with the token below as a Bearer credential (authorization: credentials in its job) or as ?token=. The newest value of every series is answered, the forwarder's own figures appended.": {
-        de: 'Prometheus fragt ihn mit dem Token unten als Bearer (authorization: credentials im Job) oder als ?token= ab. Geantwortet wird der neueste Wert jeder Zeitreihe, dahinter die Kennzahlen des Forwarders selbst.',
-        en: "Prometheus scrapes it with the token below as a Bearer credential (authorization: credentials in its job) or as ?token=. The newest value of every series is answered, the forwarder's own figures appended.",
+    "Prometheus scrapes it through the system's web server with an API token of the system that holds the scope addon:forwarder (System → Tokens), as its Bearer credential (authorization: credentials in the job). The newest value of every series is answered, the forwarder's own figures appended.": {
+        de: 'Prometheus fragt ihn über den Webserver des Systems ab, mit einem API-Token des Systems mit dem Recht addon:forwarder (System → Token), als Bearer (authorization: credentials im Job). Geantwortet wird der neueste Wert jeder Zeitreihe, dahinter die Kennzahlen des Forwarders selbst.',
+        en: "Prometheus scrapes it through the system's web server with an API token of the system that holds the scope addon:forwarder (System → Tokens), as its Bearer credential (authorization: credentials in the job). The newest value of every series is answered, the forwarder's own figures appended.",
     },
     Staleness: {de: 'Veralten', en: 'Staleness'},
     'a series without a new record for this long is left out; 0 keeps every series': {de: 'eine Zeitreihe ohne neuen Datensatz seit dieser Zeit wird weggelassen; 0 behält jede', en: 'a series without a new record for this long is left out; 0 keeps every series'},
@@ -387,11 +387,6 @@ export const MESSAGES: Catalogue = {
     'ppreset.help.clean': {de: 'Ein Ereignis wird homematic_<datenpunkt> mit Adresse, Namen, Raum und Gewerk als Labels; eine Systemmetrik <gruppe>_<name> mit ihren Labels.', en: 'An event becomes homematic_<datapoint> with the address, names, room and function as labels; a system metric <group>_<name> with its labels.'},
     'ppreset.help.one_metric': {de: 'Alle Ereignisse in homematic_value, der Datenpunkt als Label key; Systemmetriken wie oben.', en: 'Every event in homematic_value, the datapoint as the label key; system metrics as above.'},
     'ppreset.help.custom': {de: 'Eigene Templates. Variablen und Filter unten.', en: 'Your own templates. Variables and filters below.'},
-    'Scrape token': {de: 'Scrape-Token', en: 'Scrape token'},
-    Generate: {de: 'Erzeugen', en: 'Generate'},
-    Show: {de: 'Anzeigen', en: 'Show'},
-    Hide: {de: 'Verbergen', en: 'Hide'},
-    'Copy it into the Prometheus job now: it is stored in a file only the addon can read and never shown again.': {de: 'Jetzt in den Prometheus-Job kopieren: er liegt in einer Datei, die nur das Addon lesen kann, und wird nie wieder angezeigt.', en: 'Copy it into the Prometheus job now: it is stored in a file only the addon can read and never shown again.'},
     "A scrape endpoint is served by the system's own web server with its certificate; nothing to set here.": {de: 'Einen Scrape-Endpunkt liefert der Webserver des Systems mit seinem Zertifikat aus; hier ist nichts einzustellen.', en: "A scrape endpoint is served by the system's own web server with its certificate; nothing to set here."},
     'Disk spill': {de: 'Überlauf auf Datenträger', en: 'Disk spill'},
     'While the target is unreachable the records wait here, then on disk; when both are full the oldest are dropped and counted.': {

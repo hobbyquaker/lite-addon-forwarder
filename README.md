@@ -95,9 +95,9 @@ ein Serverfehler wiederholt das Paket. Elasticsearch 7 und 8, OpenSearch 1 und 2
 Zwei Betriebsarten je Ziel:
 
 - **scrape:** das Addon hält je Zeitreihe den neuesten Wert und das System liefert ihn unter
-  `/addons/forwarder/metrics/<Ziel-ID>` aus - über den Webserver des Systems, mit dessen Zertifikat, geschützt durch
-  einen **Scrape-Token**, den die Seite beim Anlegen erzeugt und einmal zeigt. Prometheus sendet ihn als Bearer
-  (`authorization: credentials: <token>` im Job) oder als `?token=`. Dahinter stehen die Kennzahlen des Forwarders
+  `/addons/forwarder/metrics/<Ziel-ID>` aus - über den Webserver des Systems, mit dessen Zertifikat, hinter dessen
+  Anmeldung: Prometheus braucht einen **API-Token des Systems mit dem Recht `addon:forwarder`** (System → Token) und
+  sendet ihn als Bearer (`authorization: credentials: <token>` im Job). Dahinter stehen die Kennzahlen des Forwarders
   selbst (`forwarder_target_sent_total`, `…_dropped_total`, `…_queued`, `…_spilled`, `forwarder_source_events_total`,
   …). Zeitreihen ohne neuen Datensatz können nach einer Frist wegfallen.
 - **remote_write:** das Addon sendet die Datensätze als `prometheus.WriteRequest` (Protobuf in snappy) an

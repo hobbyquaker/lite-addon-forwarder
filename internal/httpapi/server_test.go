@@ -374,7 +374,7 @@ func TestScrapeEndpointAndMetricGroups(t *testing.T) {
 	}
 	// a Prometheus scrape target over everything
 	var tv TargetView
-	body := map[string]any{"name": "prom", "type": "prometheus", "enabled": true, "batch": map[string]any{"size": 10, "interval_ms": 100}, "prometheus": map[string]any{"mode": "scrape", "name": config.PrometheusPresets["clean"].Name, "labels": config.PrometheusPresets["clean"].Labels}, "set_secrets": map[string]string{"scrape_token": "scr4pe"}}
+	body := map[string]any{"name": "prom", "type": "prometheus", "enabled": true, "batch": map[string]any{"size": 10, "interval_ms": 100}, "prometheus": map[string]any{"mode": "scrape", "name": config.PrometheusPresets["clean"].Name, "labels": config.PrometheusPresets["clean"].Labels}}
 	if code := w.call(t, "POST", "/api/v1/targets", body, &tv); code != 201 {
 		t.Fatalf("create target: %d", code)
 	}
@@ -393,26 +393,34 @@ func TestScrapeEndpointAndMetricGroups(t *testing.T) {
 		return res.StatusCode, string(b)
 	}
 	waitFor(t, func() bool {
-		code, text := get("/metrics/"+tv.ID+"?token=scr4pe", "")
+		code, text := get("/metrics/"+tv.ID, "")
 		return code == 200 && strings.Contains(text, `homematic_actual_temperature{`) && strings.Contains(text, `} 23.5 `)
 	})
-	code, text := get("/metrics/"+tv.ID, "Bearer scr4pe")
+	code, text := get("/metrics/"+tv.ID, "")
 	if code != 200 || !strings.Contains(text, "# TYPE homematic_actual_temperature gauge") || !strings.Contains(text, `room="Bad"`) || !strings.Contains(text, "forwarder_target_sent_total{target=\"prom\"") || !strings.Contains(text, "forwarder_source_connected 1") {
 		t.Errorf("scrape: %d\n%s", code, text)
 	}
-	if code, _ := get("/metrics/"+tv.ID, ""); code != 401 {
-		t.Errorf("no token: %d", code)
-	}
-	if code, _ := get("/metrics/"+tv.ID, "Bearer wrong"); code != 401 {
-		t.Errorf("wrong token: %d", code)
-	}
-	if code, _ := get("/metrics/nosuch?token=scr4pe", ""); code != 404 {
+	if code, _ := get("/metrics/nosuch", ""); code != 404 {
 		t.Errorf("unknown target: %d", code)
 	}
 	// a disabled target no longer answers
 	w.call(t, "POST", "/api/v1/targets/"+tv.ID+"/enabled", map[string]any{"enabled": false}, nil)
-	if code, _ := get("/metrics/"+tv.ID+"?token=scr4pe", ""); code != 404 {
+	if code, _ := get("/metrics/"+tv.ID, ""); code != 404 {
 		t.Errorf("disabled: %d", code)
+	}
+	// the scrape wrapper is applied to the endpoint alone
+	refused := New(Options{BasePath: "/addons/forwarder", WWW: t.TempDir(), Store: w.store, Pipeline: w.pipe, Source: w.src, Version: "test", Started: time.Now(), Hub: NewHub(), WrapScrape: func(http.Handler) http.Handler {
+		return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) { rw.WriteHeader(401) })
+	}})
+	rec := httptest.NewRecorder()
+	refused.ServeHTTP(rec, httptest.NewRequest("GET", "/addons/forwarder/metrics/"+tv.ID, nil))
+	if rec.Code != 401 {
+		t.Errorf("scrape wrapper not applied: %d", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	refused.ServeHTTP(rec, httptest.NewRequest("GET", "/addons/forwarder/api/v1/health", nil))
+	if rec.Code != 200 {
+		t.Errorf("scrape wrapper leaked onto the API: %d", rec.Code)
 	}
 	// the presets carry the new types
 	var presets map[string]json.RawMessage

@@ -14,7 +14,7 @@ All paths below are under `/addons/forwarder/api/v1`.
 | `GET /health` | `{version, started, uptime_s, source: {…}, metrics: {…}, targets, selections, types}` |
 | `GET /status` | `{source: {…}, metrics: {…}, targets: [Status]}` |
 | `GET /stream` | the same as Server-Sent Events (`event: status`), on every change and at least every 5 s |
-| `GET /addons/forwarder/metrics/{id}` | **outside the API and the session:** the exposition of a Prometheus target in scrape mode, for a scraper that carries the target's `scrape_token` (`Authorization: Bearer` or `?token=`); 401 otherwise, 404 for an unknown or disabled target. The forwarder's own `forwarder_*` figures follow the series |
+| `GET /addons/forwarder/metrics/{id}` | **outside the API, at the user level:** the exposition of a Prometheus target in scrape mode; 404 for an unknown or disabled target. The system's gate in front of `/addons/forwarder/` and the daemon admit a session or an API token of the scope `addon:forwarder` (`Authorization: Bearer`), which is what a scraper on the LAN carries; the configuration API needs the admin level. The forwarder's own `forwarder_*` figures follow the series |
 
 `source` is the event source's state: `connected`, `interfaces`, `devices`, `channels`, `datapoints`, `events`,
 `snapshots`, `resyncs`, `last_event`, `last_error`, `meta_revision`, `inventory_at`. `metrics` is the poller's:
@@ -82,7 +82,7 @@ globs (`PRESS_*`). Rooms and functions are matched by name, on the labels the so
 
 - `type` is `influx`, `webhook`, `elastic` or `prometheus`; the matching object holds the connection and the
   templates.
-- **Secrets** (`password`, `token`, `api_key`, `scrape_token`, as the type allows) are never answered: `secrets` says
+- **Secrets** (`password`, `token`, `api_key`, as the type allows) are never answered: `secrets` says
   which are set. A write sets one with `"set_secrets": {"token": "…"}` and removes one with
   `"clear_secrets": ["token"]`.
 - `queue.spill_mb` caps the overflow on disk (`var/spill/<id>/`) that takes the records when the memory queue is full
@@ -101,8 +101,8 @@ globs (`PRESS_*`). Rooms and functions are matched by name, on the labels the so
   data stream), `pipeline` (an ingest pipeline), `auth` (`none`, `basic` with `user` and the secret `password`,
   `apikey` with the secret `api_key`, `bearer` with the secret `token`), `gzip`, `install_template` with
   `template_pattern` (an index template put on the first connection), `preset` (`record`, `flat`, `custom`).
-- A `prometheus` target has `mode` (`scrape`: the daemon serves `/addons/forwarder/metrics/{id}` to a scraper with
-  the secret `scrape_token`; `remote_write`: it pushes to `url` with `auth` `none`, `basic` or `bearer`), `name` (the
+- A `prometheus` target has `mode` (`scrape`: the daemon serves `/addons/forwarder/metrics/{id}` behind the system's
+  gate; `remote_write`: it pushes to `url` with `auth` `none`, `basic` or `bearer`), `name` (the
   metric name template), `labels` (named templates; a label named `*` stands for every label of a metric record),
   `stale_s` (scrape mode: a series without a new record for this long is left out; 0 keeps all), `preset` (`clean`,
   `one_metric`, `custom`). Only records with a number are exported.

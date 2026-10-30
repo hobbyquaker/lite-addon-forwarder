@@ -115,15 +115,18 @@ func run(addonDir, id string, port int, base, basePath, www, tokenFile string, n
 	store.OnChange = func() { apply(); poller.Kick(); hub.Broadcast() }
 
 	wrap := func(h http.Handler) http.Handler { return h }
+	wrapScrape := wrap
 	if !noSession {
-		// the shell's admin session, or an API token of the scope addon:forwarder (a program that
-		// configures targets)
-		c := addonkit.NewChecker(addonkit.SessionOptions{Base: base, Need: addonkit.LevelAdmin, AddonID: id, OnRefused: func(r *http.Request, reason string) {
-			logf("refused %s %s: %s", r.Method, r.URL.Path, reason)
-		}})
+		// the shell's admin session, or a Full-access API token (a program that configures targets)
+		refused := func(r *http.Request, reason string) { logf("refused %s %s: %s", r.Method, r.URL.Path, reason) }
+		c := addonkit.NewChecker(addonkit.SessionOptions{Base: base, Need: addonkit.LevelAdmin, AddonID: id, OnRefused: refused})
 		wrap = c.Handler
+		// the scrape endpoints: any session, or an API token of the scope addon:forwarder - what
+		// the system's gate lets through to /addons/forwarder/ from the LAN
+		cu := addonkit.NewChecker(addonkit.SessionOptions{Base: base, Need: addonkit.LevelUser, AddonID: id, OnRefused: refused})
+		wrapScrape = cu.Handler
 	}
-	h := httpapi.New(httpapi.Options{BasePath: basePath, WWW: www, Store: store, Pipeline: pipe, Source: src, Metrics: poller, Wrap: wrap, Version: version, Started: time.Now(), Hub: hub})
+	h := httpapi.New(httpapi.Options{BasePath: basePath, WWW: www, Store: store, Pipeline: pipe, Source: src, Metrics: poller, Wrap: wrap, WrapScrape: wrapScrape, Version: version, Started: time.Now(), Hub: hub})
 	l, err := addonkit.Listen(port, "")
 	if err != nil {
 		return err

@@ -40,9 +40,13 @@ type Options struct {
 	// Metrics is the poller; nil when none runs (a test).
 	Metrics *metrics.Poller
 	// Wrap is the session check; nil: none (development only).
-	Wrap    func(http.Handler) http.Handler
-	Version string
-	Started time.Time
+	Wrap func(http.Handler) http.Handler
+	// WrapScrape is the session check of the Prometheus scrape endpoints: the user level, which
+	// an API token with the scope addon:<id> holds (the system's gate admits such a token on
+	// /addons/<id>/, so a scraper on the LAN carries one as its Bearer credential); nil: none.
+	WrapScrape func(http.Handler) http.Handler
+	Version    string
+	Started    time.Time
 	// Hub wakes the status streams; the pipeline's OnChange calls its Broadcast.
 	Hub *Hub
 }
@@ -129,14 +133,18 @@ func New(o Options) http.Handler {
 	if o.Wrap != nil {
 		h = o.Wrap(h)
 	}
-	// the Prometheus scrape endpoints sit outside the session check: a target's own token
-	// admits a scraper (Authorization: Bearer or ?token=), nothing else does
+	// the Prometheus scrape endpoints need the user level only, which an API token of the scope
+	// addon:<id> holds - the admin level of the configuration API would shut a scraper out
 	scrape := http.NewServeMux()
 	scrape.HandleFunc("GET /metrics/{id}", o.scrape)
 	Routes = append(Routes, "GET /metrics/{id}")
+	var sh http.Handler = http.StripPrefix(o.BasePath, scrape)
+	if o.WrapScrape != nil {
+		sh = o.WrapScrape(sh)
+	}
 	outer := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, o.BasePath+"/metrics/") {
-			http.StripPrefix(o.BasePath, scrape).ServeHTTP(w, r)
+			sh.ServeHTTP(w, r)
 			return
 		}
 		h.ServeHTTP(w, r)
@@ -145,20 +153,11 @@ func New(o Options) http.Handler {
 }
 
 // scrape is GET /metrics/{id}: the exposition of a Prometheus target in scrape mode, plus the
-// forwarder's own figures, for a scraper that carries the target's token.
+// forwarder's own figures.
 func (o *Options) scrape(w http.ResponseWriter, r *http.Request) {
 	e, ok := o.Pipeline.Exposer(r.PathValue("id"))
 	if !ok {
 		http.NotFound(w, r)
-		return
-	}
-	tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if tok == r.Header.Get("Authorization") {
-		tok = r.URL.Query().Get("token")
-	}
-	if !e.Authorize(tok) {
-		w.Header().Set("WWW-Authenticate", `Bearer realm="forwarder"`)
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")

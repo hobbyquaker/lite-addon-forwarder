@@ -21,7 +21,6 @@ import (
 func TestPrometheusSample(t *testing.T) {
 	cfg := config.DefaultTarget("prometheus")
 	cfg.Name = "p"
-	cfg.Secrets = map[string]string{"scrape_token": "s3cret"}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +80,6 @@ func TestPrometheusScrape(t *testing.T) {
 	cfg := config.DefaultTarget("prometheus")
 	cfg.Name = "p"
 	cfg.Prometheus.StaleS = 3600
-	cfg.Secrets = map[string]string{"scrape_token": "s3cret"}
 	_ = cfg.Validate()
 	p, _ := NewPrometheus(cfg)
 	old := sample()
@@ -108,16 +106,8 @@ func TestPrometheusScrape(t *testing.T) {
 	if !strings.Contains(out, "# TYPE network_rx_bytes_total counter\n") || !strings.Contains(out, `cpu_load{period="1"} 0.7 `) {
 		t.Errorf("exposition:\n%s", out)
 	}
-	if !p.Authorize("s3cret") || p.Authorize("") || p.Authorize("other") {
-		t.Error("authorize")
-	}
 	if msg, err := p.Test(context.Background(), Sample()); err != nil || !strings.Contains(msg, "homematic_forwarder_test") {
 		t.Errorf("test: %q %v", msg, err)
-	}
-	cfg.Secrets = map[string]string{}
-	p2, _ := NewPrometheus(cfg)
-	if _, err := p2.Test(context.Background(), Sample()); err == nil {
-		t.Error("test without a token passed")
 	}
 	text, _ := p.Preview([]*record.Record{m})
 	if !strings.HasPrefix(text, "cpu_load{") {
@@ -249,11 +239,6 @@ func TestPrometheusRemoteWrite(t *testing.T) {
 	c.code = 500
 	if err := p.Send(context.Background(), payloads[0]); err == nil || IsPermanent(err) {
 		t.Errorf("500: %v", err)
-	}
-	// scrape mode has no exposer in remote_write mode? it has: the type implements it, the
-	// pipeline asks only for enabled targets - the token check decides
-	if p.Authorize("x") {
-		t.Error("remote_write authorised a scrape without a token")
 	}
 	_ = http.StatusOK
 }

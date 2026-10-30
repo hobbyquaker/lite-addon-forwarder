@@ -170,7 +170,7 @@ test('a selection of metric groups, a Prometheus scrape target and an Elasticsea
     await expect(sdlg).toBeHidden();
     await expect(page.locator('.fw-card', {hasText: 'Metriken'})).toContainText(/cpu/);
 
-    // a Prometheus scrape target over that selection: the token is generated and shown once
+    // a Prometheus scrape target over that selection
     await page.getByRole('tab', {name: /Targets|Ziele/}).click();
     await page.getByRole('combobox', {name: /Target type|Zieltyp/}).selectOption('prometheus');
     await page.getByRole('button', {name: /Add target|Ziel hinzufügen/}).click();
@@ -178,8 +178,6 @@ test('a selection of metric groups, a Prometheus scrape target and an Elasticsea
     await dlg.getByLabel('Name', {exact: true}).fill('Prom');
     await dlg.getByLabel(/^Selection$|^Auswahl$/).selectOption({label: 'Metriken (0)'});
     await expect(dlg.getByText(/shown after saving|nach dem Speichern/)).toBeVisible();
-    const token = await dlg.getByLabel(/Scrape token|Scrape-Token/).inputValue();
-    expect(token).toMatch(/^[0-9a-f]{48}$/);
     await dlg.getByRole('tab', {name: /^Metrics$|^Metriken$/}).click();
     await expect(dlg.getByLabel(/Metric name|Metrikname/)).toHaveValue(/homematic_/);
     await dlg.getByRole('button', {name: /^Test|^Testen/}).click();
@@ -188,22 +186,21 @@ test('a selection of metric groups, a Prometheus scrape target and an Elasticsea
     await expect(dlg).toBeHidden();
     const card = page.locator('.fw-card', {hasText: 'Prom'});
     await expect(card).toContainText('Prometheus scrape');
-    // the endpoint answers the metrics with the token, 401 without
+    // the endpoint answers the metrics (the dev server has no session gate; the real one does)
     const targets = (await (await page.request.get('api/v1/targets')).json()) as {id: string; name: string}[];
     const id = targets.find((t) => t.name === 'Prom')?.id ?? '';
     expect(id).not.toBe('');
     await expect
-        .poll(async () => (await page.request.get(`metrics/${id}?token=${token}`)).text(), {timeout: 15_000})
+        .poll(async () => (await page.request.get(`metrics/${id}`)).text(), {timeout: 15_000})
         .toMatch(/cpu_count\{host="[^"]+"\} [0-9]+/);
-    const text = await (await page.request.get(`metrics/${id}`, {headers: {Authorization: `Bearer ${token}`}})).text();
+    const text = await (await page.request.get(`metrics/${id}`)).text();
     expect(text).toContain('service_messages_count{host=');
     expect(text).toContain('type="LOW_BAT"} 1');
     expect(text).toContain('forwarder_target_sent_total{target="Prom"');
-    expect((await page.request.get(`metrics/${id}`)).status()).toBe(401);
-    // the editor shows the endpoint's URL after saving, the token as set
+    expect((await page.request.get('metrics/nosuch')).status()).toBe(404);
+    // the editor shows the endpoint's URL after saving
     await card.getByRole('button', {name: /Edit|Bearbeiten/}).click();
     await expect(dlg.locator('.fw-scrape-url')).toContainText(`metrics/${id}`);
-    await expect(dlg.getByLabel(/Scrape token|Scrape-Token/)).toHaveAttribute('placeholder', /set|gesetzt/);
     await dlg.getByRole('button', {name: /Cancel|Abbrechen/}).click();
     // the system page shows the poll
     await page.getByRole('tab', {name: /^System$/}).click();

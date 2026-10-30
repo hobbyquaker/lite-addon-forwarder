@@ -23,9 +23,9 @@ import (
 )
 
 // Prometheus turns records into samples of a time series - the metric name and the labels from
-// templates, the value the record's number - and either keeps the newest promSample per series for
-// a scrape endpoint the daemon serves (mode scrape; the system's web server proxies it, a token
-// protects it) or pushes them with remote_write (mode remote_write: protobuf in snappy, what
+// templates, the value the record's number - and either keeps the newest sample per series for
+// a scrape endpoint the daemon serves (mode scrape; the system's web server proxies it behind
+// its session gate) or pushes them with remote_write (mode remote_write: protobuf in snappy, what
 // Prometheus, VictoriaMetrics, Mimir, Thanos and Grafana Cloud take).
 type Prometheus struct {
 	cfg    config.Target
@@ -34,7 +34,7 @@ type Prometheus struct {
 	labels []namedTemplate
 
 	mu     sync.Mutex
-	series map[string]*promSample // scrape mode: the newest promSample per series
+	series map[string]*promSample // scrape mode: the newest sample per series
 }
 
 // promSample is one value of one series.
@@ -296,10 +296,7 @@ func (p *Prometheus) Test(ctx context.Context, sample *record.Record) (string, e
 	}
 	line := exposeLine(s)
 	if p.cfg.Prometheus.Mode != "remote_write" {
-		if p.cfg.Secrets["scrape_token"] == "" {
-			return "", errors.New("the scrape token is not set")
-		}
-		return "the endpoint answers the newest value of every series to a scrape with the token\n" + line, nil
+		return "the endpoint answers the newest value of every series to a scraper with an API token of the scope addon:forwarder\n" + line, nil
 	}
 	payloads, _ := p.Encode([]*record.Record{sample})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSpace(p.cfg.Prometheus.URL), nil)
@@ -332,12 +329,6 @@ func (p *Prometheus) Preview(batch []*record.Record) (string, []string) {
 		b.WriteByte('\n')
 	}
 	return b.String(), errs
-}
-
-// Authorize implements Exposer.
-func (p *Prometheus) Authorize(token string) bool {
-	want := p.cfg.Secrets["scrape_token"]
-	return want != "" && token == want
 }
 
 // Expose implements Exposer: every series' newest promSample, grouped by name with a TYPE line

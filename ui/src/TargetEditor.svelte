@@ -9,7 +9,7 @@
     import type {NoticesStore} from 'occulite-ui/notices';
 
     import {get, post, put} from './api.js';
-    import {clone, randomToken, secretNames, TARGET_TYPES, type Presets, type Preview, type SelectionView, type Target, type TargetType, type TemplateHelp, type TestResult} from './model.js';
+    import {clone, secretNames, TARGET_TYPES, type Presets, type Preview, type SelectionView, type Target, type TargetType, type TemplateHelp, type TestResult} from './model.js';
     import ElasticForm from './targets/ElasticForm.svelte';
     import InfluxForm from './targets/InfluxForm.svelte';
     import PrometheusForm from './targets/PrometheusForm.svelte';
@@ -23,7 +23,6 @@
     let help = $state<TemplateHelp | undefined>();
     let tab = $state('connection');
     let secrets = $state<Record<string, string>>({});
-    let shown = $state<Record<string, boolean>>({});
     let clearSecrets = $state<string[]>([]);
     let busy = $state(false);
     let error = $state('');
@@ -48,11 +47,6 @@
         if (!target) {
             d.name = '';
             d.selection = selections[0]?.id ?? '';
-            // a new scrape endpoint gets a token at once; the user may replace it
-            if (d.type === 'prometheus') {
-                secrets.scrape_token = randomToken();
-                shown.scrape_token = true;
-            }
         }
         draft = d;
     }
@@ -138,8 +132,6 @@
                 return t('Token');
             case 'api_key':
                 return t('API key');
-            case 'scrape_token':
-                return t('Scrape token');
         }
         return t('Password');
     }
@@ -190,20 +182,12 @@
                                 <label for="fw-secret-{name}">{secretLabel(name)}</label>
                                 <div>
                                     <div class="fw-inline">
-                                        {#if shown[name]}
-                                            <input id="fw-secret-{name}" class="hmm-input fw-mono" type="text" autocomplete="off" spellcheck="false" bind:value={secrets[name]} placeholder={t('(not set)')} />
-                                        {:else}
-                                            <input id="fw-secret-{name}" class="hmm-input" type="password" autocomplete="new-password" bind:value={secrets[name]} placeholder={draft.secrets?.[name] && !clearSecrets.includes(name) ? t('(set - enter a new value to replace it)') : t('(not set)')} />
-                                        {/if}
-                                        {#if name === 'scrape_token'}
-                                            <button class="hmm-button" type="button" onclick={() => { secrets[name] = randomToken(); shown[name] = true; }}>{t('Generate')}</button>
-                                            <button class="hmm-button" type="button" onclick={() => (shown[name] = !shown[name])}>{shown[name] ? t('Hide') : t('Show')}</button>
-                                        {/if}
+                                        <input id="fw-secret-{name}" class="hmm-input" type="password" autocomplete="new-password" bind:value={secrets[name]} placeholder={draft.secrets?.[name] && !clearSecrets.includes(name) ? t('(set - enter a new value to replace it)') : t('(not set)')} />
                                         {#if draft.secrets?.[name]}
                                             <label><input type="checkbox" checked={clearSecrets.includes(name)} onchange={(e) => (clearSecrets = (e.currentTarget as HTMLInputElement).checked ? [...clearSecrets, name] : clearSecrets.filter((x) => x !== name))} /> {t('remove')}</label>
                                         {/if}
                                     </div>
-                                    <div class="fw-help">{name === 'scrape_token' ? t('Copy it into the Prometheus job now: it is stored in a file only the addon can read and never shown again.') : t('Stored in a file only the addon can read; never shown again.')}</div>
+                                    <div class="fw-help">{t('Stored in a file only the addon can read; never shown again.')}</div>
                                 </div>
                             </div>
                         {/each}

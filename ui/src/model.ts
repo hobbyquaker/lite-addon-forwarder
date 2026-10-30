@@ -375,7 +375,7 @@ export function secretNames(t: Target): string[] {
             return t.elastic?.auth === 'basic' ? ['password'] : t.elastic?.auth === 'apikey' ? ['api_key'] : t.elastic?.auth === 'bearer' ? ['token'] : [];
         case 'prometheus':
             if (t.prometheus?.mode === 'remote_write') return t.prometheus.auth === 'basic' ? ['password'] : t.prometheus.auth === 'bearer' ? ['token'] : [];
-            return ['scrape_token'];
+            return [];
     }
     return [];
 }
@@ -393,13 +393,6 @@ export function describeTarget(t: Target): {kind: string; where: string} {
             return t.prometheus?.mode === 'remote_write' ? {kind: 'Prometheus remote_write', where: t.prometheus.url} : {kind: 'Prometheus scrape', where: t.id ? `metrics/${t.id}` : ''};
     }
     return {kind: t.type, where: ''};
-}
-
-/** A random hex token for a scrape endpoint. */
-export function randomToken(): string {
-    const b = new Uint8Array(24);
-    crypto.getRandomValues(b);
-    return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
 }
 
 /** Bytes as a short text. */

@@ -50,7 +50,7 @@
                     {:else}
                         <span class="fw-muted">{t('(shown after saving)')}</span>
                     {/if}
-                    <div class="fw-help">{t('Prometheus scrapes it with the token below as a Bearer credential (authorization: credentials in its job) or as ?token=. The newest value of every series is answered, the forwarder\'s own figures appended.')}</div>
+                    <div class="fw-help">{t('Prometheus scrapes it through the system\'s web server with an API token of the system that holds the scope addon:forwarder (System → Tokens), as its Bearer credential (authorization: credentials in the job). The newest value of every series is answered, the forwarder\'s own figures appended.')}</div>
                 </div>
             </div>
             <div class="fw-row">

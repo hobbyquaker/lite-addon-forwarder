@@ -92,9 +92,9 @@ dropped and counted; a 429 or a server error retries the batch. Elasticsearch 7 
 Two modes per target:
 
 - **scrape:** the addon keeps the newest value per series and the system serves it at
-  `/addons/forwarder/metrics/<target id>` - through the system's web server with its certificate, protected by a
-  **scrape token** the page generates when the target is created and shows once. Prometheus sends it as a Bearer
-  credential (`authorization: credentials: <token>` in the job) or as `?token=`. The forwarder's own figures follow
+  `/addons/forwarder/metrics/<target id>` - through the system's web server with its certificate, behind its login:
+  Prometheus needs an **API token of the system with the scope `addon:forwarder`** (System → Tokens) and sends it as
+  a Bearer credential (`authorization: credentials: <token>` in the job). The forwarder's own figures follow
   (`forwarder_target_sent_total`, `…_dropped_total`, `…_queued`, `…_spilled`, `forwarder_source_events_total`, …). A
   series without a new record can be left out after a staleness period.
 - **remote_write:** the addon pushes the records as a `prometheus.WriteRequest` (protobuf in snappy) to

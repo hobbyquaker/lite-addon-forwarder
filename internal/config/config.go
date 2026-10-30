@@ -172,7 +172,8 @@ type Prometheus struct {
 	// URL is the remote_write endpoint (mode remote_write).
 	URL string `json:"url"`
 	// Auth is none, basic (User and the secret password) or bearer (the secret token), for
-	// remote_write. The scrape endpoint is protected by the secret scrape_token.
+	// remote_write. The scrape endpoint is protected by the system's session gate: a scraper
+	// carries an API token of the scope addon:forwarder.
 	Auth string `json:"auth"`
 	User string `json:"user"`
 	// Name is the template of the metric name; Labels the label templates (an empty value leaves
@@ -224,7 +225,7 @@ var SecretNames = map[string][]string{
 	"influx":     {"password", "token"},
 	"webhook":    {"password", "token"},
 	"elastic":    {"password", "token", "api_key"},
-	"prometheus": {"password", "token", "scrape_token"},
+	"prometheus": {"password", "token"},
 }
 
 // DefaultTarget is a new target's defaults.
